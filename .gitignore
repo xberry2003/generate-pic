@@ -1,0 +1,75 @@
+# 项目根目录 .gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.pnpm
+pnpm-lock.yaml
+
+# Vite
+dist/
+.vite
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# 上传文件（不追踪真实上传的文件）
+backend/uploads/*
+!backend/uploads/.gitkeep
+!backend/uploads/images/
+backend/uploads/images/*
+!backend/uploads/images/.gitkeep
+
+# 临时文件
+.tmp/
+temp/
+tmp/
+
+# 编辑器备份文件
+*.bak
+*.backup
+*~
+
+# 压缩包
+*.zip
+*.rar
+*.tar.gz
+*.tar.bz2

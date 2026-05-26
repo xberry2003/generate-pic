@@ -1,0 +1,38 @@
+/* 生成页面的样式 */
+.generate-page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.generate-card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.prompt-input {
+  border-radius: 4px;
+  transition: border-color 0.3s;
+}
+
+.prompt-input:focus {
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+.status-display {
+  padding: 8px 0;
+}
+
+.image-preview {
+  position: relative;
+  overflow: hidden;
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+
+.image-preview img {
+  transition: transform 0.3s;
+}
+
+.image-preview:hover img {
+  transform: scale(1.05);
+}

@@ -1,0 +1,86 @@
+如果双击 .bat 文件无法启动，请按以下步骤操作：
+
+═══════════════════════════════════════════════════════════
+
+【快速手动启动 - 3 步搞定】
+
+第一步：检查前置条件
+─────────────────────
+
+按 Win + R，输入 cmd 打开命令行，运行：
+
+  python --version
+  node --version
+
+如果任何一个显示"未找到"，说明需要安装：
+  - Python 3.8+ : https://www.python.org/downloads/
+  - Node.js 16+ : https://nodejs.org/
+
+⚠️ Python 安装时务必勾选 "Add Python to PATH"！
+   安装后需要重启计算机！
+
+
+第二步：启动后端 - 打开一个命令行窗口
+─────────────────────────────────────
+
+复制粘贴这些命令，逐行运行：
+
+  cd d:\桌面\generate-pic\backend
+  
+  python -m venv venv
+  
+  venv\Scripts\activate.bat
+  
+  pip install -r requirements.txt
+  
+  python -m app.main
+
+当看到 "Uvicorn running on http://0.0.0.0:8000" 说明成功！
+
+
+第三步：启动前端 - 打开另一个命令行窗口
+──────────────────────────────────────
+
+复制粘贴这些命令，逐行运行：
+
+  cd d:\桌面\generate-pic\frontend
+  
+  npm install
+  
+  npm run dev
+
+当看到 "Local: http://localhost:5173/" 说明成功！
+
+
+第四步：打开浏览器
+──────────────────
+
+访问：http://localhost:5173
+
+完成！现在可以使用应用了 🎉
+
+
+═══════════════════════════════════════════════════════════
+
+【更多帮助】
+
+详细的故障排查和常见问题解答：
+👉 查看 TROUBLESHOOTING.md 文件
+
+
+【简单快速启动脚本（一行命令）】
+
+如果上面太复杂，可以尝试这个一行命令版本：
+
+后端：
+  cd d:\桌面\generate-pic\backend && python -m venv venv && venv\Scripts\activate.bat && pip install -r requirements.txt && python -m app.main
+
+前端：
+  cd d:\桌面\generate-pic\frontend && npm install && npm run dev
+
+（在两个不同的命令行窗口中分别运行上面两个命令）
+
+
+═══════════════════════════════════════════════════════════
+
+祝你使用愉快！🚀
