@@ -3,7 +3,9 @@ import axios from 'axios'
 // 创建 axios 实例，用于与后端 API 通信
 const apiClient = axios.create({
   baseURL: 'http://localhost:8000/api',
-  timeout: 60000,
+  // 真实生图接口可能需要等待任务排队和轮询，前端超时必须长于后端 JIMENG_TIMEOUT_SECONDS。
+  // 这里设置为 240 秒，避免后端仍在生成时前端先报 timeout of 60000ms exceeded。
+  timeout: 240000,
   headers: {
     'Content-Type': 'application/json',
   },

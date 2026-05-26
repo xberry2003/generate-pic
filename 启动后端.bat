@@ -14,4 +14,4 @@ if not exist "venv\Lib\site-packages\fastapi\" (
     pip install -r requirements.txt
 )
 
-python -m app.main
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000

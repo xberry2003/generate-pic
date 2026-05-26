@@ -10,6 +10,7 @@ from app.services.image_generation_service import (
     call_image_generation_api,
     save_image_file,
 )
+from app.services.jimeng_client import JimengImageGenerationClient, JimengClientError
 
 router = APIRouter()
 
@@ -34,6 +35,13 @@ class ImageResponse(BaseModel):
 class GenerateResponse(BaseModel):
     message: str
     images: list[ImageResponse]
+
+
+@router.get("/generate/provider-health")
+async def provider_health():
+    """返回当前图像生成供应商配置状态；只返回 has_api_key 布尔值，不泄露真实密钥。"""
+
+    return JimengImageGenerationClient().provider_health()
 
 
 @router.post("/generate", response_model=GenerateResponse)
@@ -74,6 +82,9 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
         )
     except HTTPException:
         raise
+    except JimengClientError as e:
+        print(f"Generation provider error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         print(f"Request error: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
