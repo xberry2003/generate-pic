@@ -1,21 +1,31 @@
 import React, { useState } from 'react'
 import { Layout, Menu } from 'antd'
-import { PictureOutlined, FileImageOutlined } from '@ant-design/icons'
+import { AppstoreOutlined, FileImageOutlined, PictureOutlined } from '@ant-design/icons'
+import BatchGenerateTablePage from './pages/BatchGenerateTablePage'
 import GeneratePage from './pages/GeneratePage'
 import GalleryPage from './pages/GalleryPage'
 import './App.css'
 
-// 主应用程序入口
+/**
+ * 主应用入口
+ * 数据流说明：
+ * - 默认展示新的多维表格工作台，用户可以在一张表里完成生成、搜索、上传、下载和详情查看。
+ * - 原 GeneratePage、GalleryPage 仍保留在菜单中，避免删除旧功能导致已跑通代码不可访问。
+ * - 页面切换只发生在前端状态 currentPage，不改变任何后端接口路径。
+ */
 function App() {
-  // 当前选中的菜单项，用于切换页面
-  const [currentPage, setCurrentPage] = useState('generate')
+  const [currentPage, setCurrentPage] = useState('batch')
 
-  // 菜单项配置
   const menuItems = [
+    {
+      key: 'batch',
+      icon: <AppstoreOutlined />,
+      label: '多维表格工作台',
+    },
     {
       key: 'generate',
       icon: <PictureOutlined />,
-      label: '生成图片',
+      label: '经典生成页',
     },
     {
       key: 'gallery',
@@ -24,50 +34,43 @@ function App() {
     },
   ]
 
-  // 处理菜单点击
-  const handleMenuClick = (e) => {
-    setCurrentPage(e.key)
-  }
-
-  // 根据当前页面渲染相应内容
   const renderContent = () => {
     switch (currentPage) {
+      case 'batch':
+        return <BatchGenerateTablePage />
       case 'generate':
         return <GeneratePage />
       case 'gallery':
         return <GalleryPage />
       default:
-        return <GeneratePage />
+        return <BatchGenerateTablePage />
     }
   }
 
   return (
-    <Layout style={{ height: '100vh' }}>
-      {/* 页面顶部导航栏 */}
-      <Layout.Header style={{ background: '#fff', padding: '0 24px', borderBottom: '1px solid #f0f0f0' }}>
-        <div style={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-          <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold', color: '#1890ff' }}>
-            🎨 文生图图片库
-          </h1>
+    <Layout className="app-shell">
+      <Layout.Header className="app-header">
+        <div className="app-brand">
+          <span className="brand-mark">GP</span>
+          <div>
+            <div className="brand-title">文生图图片工作台</div>
+            <div className="brand-subtitle">多维表格式批量生成与图库管理</div>
+          </div>
         </div>
       </Layout.Header>
 
-      <Layout style={{ height: 'calc(100vh - 64px)' }}>
-        {/* 左侧菜单栏 */}
-        <Layout.Sider width={200} style={{ background: '#fff', borderRight: '1px solid #f0f0f0' }}>
+      <Layout className="app-body">
+        <Layout.Sider width={216} className="app-sider">
           <Menu
             mode="inline"
             selectedKeys={[currentPage]}
             items={menuItems}
-            onClick={handleMenuClick}
-            style={{ height: '100%', borderRight: 'none' }}
+            onClick={(event) => setCurrentPage(event.key)}
+            className="app-menu"
           />
         </Layout.Sider>
 
-        {/* 主内容区域 */}
-        <Layout.Content style={{ padding: '24px', overflow: 'auto' }}>
-          {renderContent()}
-        </Layout.Content>
+        <Layout.Content className="app-content">{renderContent()}</Layout.Content>
       </Layout>
     </Layout>
   )

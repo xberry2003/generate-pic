@@ -57,6 +57,11 @@ backend/uploads/*
 !backend/uploads/images/
 backend/uploads/images/*
 !backend/uploads/images/.gitkeep
+backend/app/uploads/*
+!backend/app/uploads/.gitkeep
+!backend/app/uploads/images/
+backend/app/uploads/images/*
+!backend/app/uploads/images/.gitkeep
 
 # 临时文件
 .tmp/

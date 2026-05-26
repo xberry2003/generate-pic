@@ -1,12 +1,67 @@
-/* App 主要样式 */
-.app-header {
-  background: white;
-  padding: 16px 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+.app-shell {
+  min-height: 100vh;
+  background: #f4f6f8;
 }
 
-.app-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: bold;
+.app-header {
+  height: 58px;
+  padding: 0 20px;
+  background: #ffffff;
+  border-bottom: 1px solid #e6e9ef;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  background: #2563eb;
+  border-radius: 7px;
+}
+
+.brand-title {
+  color: #1f2937;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.brand-subtitle {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.app-body {
+  min-height: calc(100vh - 58px);
+}
+
+.app-sider {
+  background: #ffffff !important;
+  border-right: 1px solid #e6e9ef;
+}
+
+.app-menu {
+  height: 100%;
+  padding-top: 10px;
+  border-right: none !important;
+}
+
+.app-content {
+  min-width: 0;
+  padding: 14px;
+  overflow: auto;
+  background: #f4f6f8;
 }

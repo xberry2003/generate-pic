@@ -61,7 +61,7 @@ async def call_image_generation_api(prompt: str, keywords: str = "", count: int 
     for i in range(count):
         # 鍒涘缓涓€涓殢鏈洪鑹茬殑鍥剧墖
         # 瀹為檯搴旂敤涓紝杩欓噷搴旇鏄粠鐪熷疄 API 鑾峰彇鐨勫浘鐗囨暟鎹?
-        img = create_mock_image(prompt, keywords)
+        img = await create_mock_image(prompt, keywords)
         images.append(img)
     
     pass
