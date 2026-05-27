@@ -4,7 +4,6 @@ import {
   Card,
   Empty,
   Input,
-  InputNumber,
   Popconfirm,
   Segmented,
   Space,
@@ -34,6 +33,8 @@ import UploadImageModal from '../components/UploadImageModal'
 import './BatchGenerateTablePage.css'
 
 const { Text } = Typography
+const DEFAULT_BATCH_ROWS = 10
+const MAX_GENERATE_CONCURRENCY = 2
 // 前端表格任务状态。状态值沿用原生成页逻辑，避免改变现有交互语义。
 const STATUS = {
   IDLE: 'idle',
@@ -50,7 +51,7 @@ const STATUS = {
  * 创建一条前端表格记录
  * 数据流说明：表格行是前端工作台的内部结构，不要求后端新增字段；生成或搜索结果会被适配成该结构。
  */
-const createEmptyRow = () => ({
+const createEmptyRow = (overrides = {}) => ({
   id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   originalPrompt: '',
   description: '',
@@ -68,6 +69,9 @@ const createEmptyRow = () => ({
   tempPreviewUrl: '',
   errorMessage: '',
   createdAt: '',
+  lastEditedAt: 0,
+  dirty: false,
+  ...overrides,
 })
 
 /**
@@ -139,9 +143,9 @@ const mapImageToRow = (image) => ({
  */
 function BatchGenerateTablePage() {
   const [rows, setRows] = useState([])
-  const [selectedRowKeys, setSelectedRowKeys] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [loadingSearch, setLoadingSearch] = useState(false)
+  const [workMode, setWorkMode] = useState('single')
   const [viewMode, setViewMode] = useState('表格视图')
   const [uploadOpen, setUploadOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -150,6 +154,9 @@ function BatchGenerateTablePage() {
 
   // 每行一份防抖函数，保证编辑 A 行不会触发 B 行生成。
   const rowDebounceMapRef = useRef(new Map())
+  const generateQueueRef = useRef([])
+  const activeGenerateCountRef = useRef(0)
+  const queuedRowIdsRef = useRef(new Set())
   const rowsRef = useRef(rows)
 
   useEffect(() => {
@@ -159,6 +166,8 @@ function BatchGenerateTablePage() {
   useEffect(() => {
     return () => {
       rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
+      generateQueueRef.current = []
+      queuedRowIdsRef.current.clear()
     }
   }, [])
 
@@ -176,11 +185,40 @@ function BatchGenerateTablePage() {
 
   const keywordsToRequestString = (keywords) => normalizeKeywords(keywords).join(',')
 
+  const resetGeneratedState = () => ({
+    status: STATUS.WAITING,
+    uploaded: false,
+    uploading: false,
+    cosKey: '',
+    dbId: null,
+    previewUrl: '',
+    downloadUrl: '',
+    tempImageBase64: '',
+    tempPreviewUrl: '',
+    resultImages: [],
+    errorMessage: '',
+    dirty: true,
+    lastEditedAt: Date.now(),
+  })
+
+  const ensureBatchRows = (minRows = DEFAULT_BATCH_ROWS) => {
+    setRows((prevRows) => {
+      if (prevRows.length >= minRows) return prevRows
+      return [...prevRows, ...Array.from({ length: minRows - prevRows.length }, () => createEmptyRow())]
+    })
+  }
+
+  const activateBatchMode = () => {
+    setWorkMode('batch')
+    setViewMode('表格视图')
+    ensureBatchRows()
+  }
+
   /**
    * 单行生成逻辑
    * 数据流：读取表格行 -> 调用现有 generateImages(prompt, keywords, count) -> 归一化 response.images -> 写回该行。
    */
-  const generateRow = async (rowId, options = {}) => {
+  const runGenerateRow = async (rowId, options = {}) => {
     const row = getRowById(rowId)
     if (!row) return
 
@@ -226,6 +264,7 @@ function BatchGenerateTablePage() {
         tempImageBase64: firstImage?.imageBase64 || '',
         createdAt: resultImages[0]?.createdAt || new Date().toISOString(),
         errorMessage: '',
+        dirty: false,
       })
       if (!options.silent) message.success('生成成功')
     } catch (error) {
@@ -237,6 +276,37 @@ function BatchGenerateTablePage() {
     }
   }
 
+  const drainGenerateQueue = () => {
+    while (activeGenerateCountRef.current < MAX_GENERATE_CONCURRENCY && generateQueueRef.current.length > 0) {
+      const job = generateQueueRef.current.shift()
+      queuedRowIdsRef.current.delete(job.rowId)
+      const row = getRowById(job.rowId)
+      if (!row?.originalPrompt?.trim() || row.status === STATUS.GENERATING || row.status === STATUS.UPLOADING) continue
+
+      activeGenerateCountRef.current += 1
+      runGenerateRow(job.rowId, job.options)
+        .catch(() => {})
+        .finally(() => {
+          activeGenerateCountRef.current = Math.max(0, activeGenerateCountRef.current - 1)
+          drainGenerateQueue()
+        })
+    }
+  }
+
+  const enqueueGenerateRow = (rowId, options = {}) => {
+    const row = getRowById(rowId)
+    if (!row?.originalPrompt?.trim() || row.status === STATUS.GENERATING || row.status === STATUS.UPLOADING) return
+    if (queuedRowIdsRef.current.has(rowId)) return
+    queuedRowIdsRef.current.add(rowId)
+    generateQueueRef.current.push({ rowId, options })
+    drainGenerateQueue()
+  }
+
+  const generateRow = (rowId, options = {}) => {
+    rowDebounceMapRef.current.get(rowId)?.cancel?.()
+    enqueueGenerateRow(rowId, options)
+  }
+
   const getDebouncedGenerate = (rowId) => {
     if (!rowDebounceMapRef.current.has(rowId)) {
       // 10 秒无输入后触发当前行生成；触发前先把该行标记为 waiting。
@@ -244,8 +314,8 @@ function BatchGenerateTablePage() {
         rowId,
         createDebouncedFunction(() => {
           const row = getRowById(rowId)
-          if (!row?.originalPrompt?.trim() || row.status === STATUS.GENERATING) return
-          updateRow(rowId, { status: STATUS.WAITING })
+          if (!row?.originalPrompt?.trim() || row.status === STATUS.GENERATING || row.status === STATUS.UPLOADING) return
+          updateRow(rowId, { status: STATUS.WAITING, dirty: true })
           generateRow(rowId, { silent: true })
         }, 10000)
       )
@@ -257,8 +327,7 @@ function BatchGenerateTablePage() {
     updateRow(rowId, (row) => ({
       originalPrompt: value,
       description: row.description || value,
-      status: value.trim() ? STATUS.WAITING : STATUS.IDLE,
-      errorMessage: '',
+      ...(value.trim() ? resetGeneratedState() : { ...resetGeneratedState(), status: STATUS.IDLE }),
     }))
 
     const debouncedGenerate = getDebouncedGenerate(rowId)
@@ -269,15 +338,107 @@ function BatchGenerateTablePage() {
     }
   }
 
+  const scheduleRowGenerate = (rowId) => {
+    const row = getRowById(rowId)
+    const debouncedGenerate = getDebouncedGenerate(rowId)
+    if (row?.originalPrompt?.trim()) debouncedGenerate()
+  }
+
+  const handleRowFieldChange = (rowId, patch) => {
+    updateRow(rowId, (row) => {
+      const nextPatch = typeof patch === 'function' ? patch(row) : patch
+      const hasPrompt = (nextPatch.originalPrompt ?? row.originalPrompt).trim()
+      return {
+        ...nextPatch,
+        ...(hasPrompt ? resetGeneratedState() : { ...resetGeneratedState(), status: STATUS.IDLE }),
+      }
+    })
+    window.setTimeout(() => scheduleRowGenerate(rowId), 0)
+  }
+
   const handleAddRow = () => {
     setRows((prevRows) => [createEmptyRow(), ...prevRows])
+  }
+
+  const handleAddBatchRows = (count = DEFAULT_BATCH_ROWS) => {
+    setRows((prevRows) => [...prevRows, ...Array.from({ length: count }, () => createEmptyRow())])
+  }
+
+  const handlePromptPaste = (rowId, event) => {
+    const text = event.clipboardData?.getData('text') || ''
+    const pastedRows = text
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+    if (pastedRows.length <= 1) return
+
+    event.preventDefault()
+    const editedAt = Date.now()
+    let targetIds = []
+    setRows((prevRows) => {
+      const startIndex = prevRows.findIndex((row) => row.id === rowId)
+      if (startIndex < 0) return prevRows
+
+      const nextRows = [...prevRows]
+      while (nextRows.length < startIndex + pastedRows.length) {
+        nextRows.push(createEmptyRow())
+      }
+
+      targetIds = pastedRows.map((prompt, offset) => {
+        const index = startIndex + offset
+        const current = nextRows[index]
+        nextRows[index] = {
+          ...current,
+          originalPrompt: prompt,
+          description: current.description || prompt,
+          ...resetGeneratedState(),
+          lastEditedAt: editedAt,
+        }
+        return current.id
+      })
+
+      return nextRows
+    })
+
+    window.setTimeout(() => targetIds.forEach((id) => scheduleRowGenerate(id)), 0)
+    message.success(`已拆分 ${pastedRows.length} 行，10 秒后自动生成`)
+  }
+
+  const focusCell = (rowId, columnKey) => {
+    window.setTimeout(() => {
+      const selector = `[data-cell-id="${rowId}-${columnKey}"]`
+      const element = document.querySelector(selector)
+      const target = element?.tagName === 'TEXTAREA' || element?.tagName === 'INPUT'
+        ? element
+        : element?.querySelector?.('textarea,input,[contenteditable="true"]')
+      target?.focus?.()
+    }, 0)
+  }
+
+  const focusNextRowCell = (rowId, columnKey) => {
+    const index = rowsRef.current.findIndex((row) => row.id === rowId)
+    const nextRow = rowsRef.current[index + 1]
+    if (nextRow) {
+      focusCell(nextRow.id, columnKey)
+      return
+    }
+    const newRow = createEmptyRow()
+    setRows((prevRows) => [...prevRows, newRow])
+    focusCell(newRow.id, columnKey)
+  }
+
+  const handleCellKeyDown = (rowId, columnKey, event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return
+    event.preventDefault()
+    focusNextRowCell(rowId, columnKey)
   }
 
   const handleDeleteRow = (rowId) => {
     rowDebounceMapRef.current.get(rowId)?.cancel?.()
     rowDebounceMapRef.current.delete(rowId)
+    queuedRowIdsRef.current.delete(rowId)
+    generateQueueRef.current = generateQueueRef.current.filter((job) => job.rowId !== rowId)
     setRows((prevRows) => prevRows.filter((row) => row.id !== rowId))
-    setSelectedRowKeys((keys) => keys.filter((key) => key !== rowId))
   }
 
   /**
@@ -286,17 +447,24 @@ function BatchGenerateTablePage() {
    * 某一行失败只会写入该行 failed，不会中断后续行。
    */
   const handleBatchGenerate = async () => {
-    const targetRows = rows.filter((row) => selectedRowKeys.includes(row.id) && row.originalPrompt.trim())
-    if (targetRows.length === 0) {
-      message.warning('请先勾选至少一条有原始描述的记录')
+    if (workMode !== 'batch') {
+      activateBatchMode()
+      message.success('已切换到批量表格模式')
       return
     }
 
-    for (const row of targetRows) {
-      updateRow(row.id, { status: STATUS.WAITING })
-      await generateRow(row.id, { silent: true })
+    const targetRows = rows.filter((row) => row.originalPrompt.trim() && row.status !== STATUS.GENERATING && row.status !== STATUS.UPLOADING)
+    if (targetRows.length === 0) {
+      message.warning('请先输入至少一条原始描述')
+      return
     }
-    message.success('批量生成已完成')
+
+    targetRows.forEach((row) => {
+      rowDebounceMapRef.current.get(row.id)?.cancel?.()
+      updateRow(row.id, { status: STATUS.WAITING, dirty: true })
+      enqueueGenerateRow(row.id, { silent: true })
+    })
+    message.success(`已加入生成队列：${targetRows.length} 行`)
   }
 
   const handleSearch = async (query = searchQuery) => {
@@ -305,7 +473,6 @@ function BatchGenerateTablePage() {
       const response = await searchImages(query)
       const nextRows = (response.images || []).map(mapImageToRow)
       setRows(nextRows)
-      setSelectedRowKeys([])
       message.success(`找到 ${response.total || nextRows.length} 张图片`)
     } catch (error) {
       message.error(error?.response?.data?.detail || '搜索失败')
@@ -315,8 +482,10 @@ function BatchGenerateTablePage() {
   }
 
   const handleRefresh = () => {
-    setRows([])
-    setSelectedRowKeys([])
+    rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
+    generateQueueRef.current = []
+    queuedRowIdsRef.current.clear()
+    setRows(workMode === 'batch' ? Array.from({ length: DEFAULT_BATCH_ROWS }, () => createEmptyRow()) : [])
     setSearchQuery('')
   }
 
@@ -324,7 +493,6 @@ function BatchGenerateTablePage() {
     if (!image) return
     const nextRow = mapImageToRow(image)
     setRows((prevRows) => [nextRow, ...prevRows])
-    setSelectedRowKeys([])
     message.success('已添加本次上传图片')
   }
 
@@ -392,18 +560,12 @@ function BatchGenerateTablePage() {
     setDrawerOpen(true)
   }
 
-  const rowSelection = {
-    selectedRowKeys,
-    onChange: setSelectedRowKeys,
-    columnWidth: 42,
-  }
-
   const columns = useMemo(
     () => [
       {
         title: '原始描述',
         dataIndex: 'originalPrompt',
-        width: 260,
+        width: 320,
         render: (_, row) => (
           <EditableCell
             type="textarea"
@@ -411,56 +573,47 @@ function BatchGenerateTablePage() {
             placeholder="输入描述，10 秒后自动生成"
             disabled={row.status === STATUS.GENERATING}
             onChange={(value) => handlePromptChange(row.id, value)}
+            onPaste={(event) => handlePromptPaste(row.id, event)}
+            onKeyDown={(event) => handleCellKeyDown(row.id, 'prompt', event)}
+            dataCellId={`${row.id}-prompt`}
           />
         ),
       },
       {
         title: '描述扩充',
         dataIndex: 'description',
-        width: 240,
+        width: 300,
         render: (_, row) => (
           <EditableCell
             type="textarea"
             value={row.description}
             placeholder="本地编辑扩充描述"
             disabled={row.status === STATUS.GENERATING}
-            onChange={(value) => updateRow(row.id, { description: value })}
+            onChange={(value) => handleRowFieldChange(row.id, { description: value })}
+            onKeyDown={(event) => handleCellKeyDown(row.id, 'description', event)}
+            dataCellId={`${row.id}-description`}
           />
         ),
       },
       {
         title: 'Keywords',
         dataIndex: 'keywords',
-        width: 220,
+        width: 240,
         render: (_, row) => (
           <EditableCell
             type="tags"
             value={row.keywords}
             placeholder="输入关键词"
             disabled={row.status === STATUS.GENERATING}
-            onChange={(value) => updateRow(row.id, { keywords: value })}
-          />
-        ),
-      },
-      {
-        title: '数量',
-        dataIndex: 'count',
-        width: 88,
-        render: (_, row) => (
-          <InputNumber
-            min={1}
-            max={4}
-            value={row.count}
-            disabled={row.status === STATUS.GENERATING}
-            onChange={(value) => updateRow(row.id, { count: value || 1 })}
-            className="count-input"
+            onChange={(value) => handleRowFieldChange(row.id, { keywords: value })}
+            dataCellId={`${row.id}-keywords`}
           />
         ),
       },
       {
         title: '状态',
         dataIndex: 'status',
-        width: 120,
+        width: 112,
         render: (status, row) => (
           <Space direction="vertical" size={2}>
             <StatusTag status={status} />
@@ -471,7 +624,7 @@ function BatchGenerateTablePage() {
       {
         title: '结果图片',
         dataIndex: 'resultImages',
-        width: 220,
+        width: 120,
         render: (images, row) =>
           images?.length ? (
             <div className="result-thumbs">
@@ -494,9 +647,9 @@ function BatchGenerateTablePage() {
         title: '操作',
         key: 'actions',
         fixed: 'right',
-        width: 320,
+        width: 260,
         render: (_, row) => (
-          <Space size={4} className="row-actions">
+          <Space size={4} className="row-actions" wrap={false}>
             <Tooltip title="立即生成">
               <Button
                 size="small"
@@ -547,7 +700,7 @@ function BatchGenerateTablePage() {
         ),
       },
     ],
-    [selectedRowKeys]
+    []
   )
 
   const galleryItems = rows.flatMap((row) =>
@@ -565,8 +718,13 @@ function BatchGenerateTablePage() {
             新增记录
           </Button>
           <Button icon={<ReloadOutlined />} onClick={handleBatchGenerate}>
-            批量生成
+            {workMode === 'batch' ? '生成全部待处理' : '批量生成'}
           </Button>
+          {workMode === 'batch' && (
+            <Button onClick={() => handleAddBatchRows(10)}>
+              添加 10 行
+            </Button>
+          )}
           <Button icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
             上传图片
           </Button>
@@ -595,11 +753,12 @@ function BatchGenerateTablePage() {
         <div className="table-summary">
           <Space split={<span className="summary-split" />}>
             <Text strong>图片生成工作台</Text>
+            <Text type="secondary">{workMode === 'batch' ? '批量表格模式' : '单条工作流'}</Text>
             <Text type="secondary">共 {rows.length} 条记录</Text>
-            <Text type="secondary">已选择 {selectedRowKeys.length} 条</Text>
           </Space>
           <Space>
-            <Tag color="blue">按行独立防抖</Tag>
+            <Tag color="blue">每行 10 秒自动生成</Tag>
+            <Tag color="purple">最多 {MAX_GENERATE_CONCURRENCY} 行并发</Tag>
             <Tag color="green">复用现有 API</Tag>
           </Space>
         </div>
@@ -610,9 +769,9 @@ function BatchGenerateTablePage() {
             size="middle"
             columns={columns}
             dataSource={rows}
-            rowSelection={rowSelection}
             pagination={false}
-            scroll={{ x: 1500, y: 'calc(100vh - 260px)' }}
+            locale={{ emptyText: '点击“批量生成”进入表格模式，或点击“新增记录”开始单条生成' }}
+            scroll={{ x: 1350, y: 'calc(100vh - 260px)' }}
             className="batch-table"
           />
         ) : (

@@ -15,6 +15,9 @@ function EditableCell({
   max,
   onChange,
   onPressEnter,
+  onPaste,
+  onKeyDown,
+  dataCellId,
 }) {
   if (type === 'textarea') {
     return (
@@ -25,6 +28,9 @@ function EditableCell({
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         onPressEnter={onPressEnter}
+        onPaste={onPaste}
+        onKeyDown={onKeyDown}
+        data-cell-id={dataCellId}
         className="editable-cell-textarea"
       />
     )
@@ -39,6 +45,8 @@ function EditableCell({
         disabled={disabled}
         tokenSeparators={[',', '，']}
         onChange={onChange}
+        onKeyDown={onKeyDown}
+        data-cell-id={dataCellId}
         className="editable-cell-tags"
         suffixIcon={null}
       />
@@ -53,6 +61,8 @@ function EditableCell({
         max={max}
         disabled={disabled}
         onChange={(nextValue) => onChange(nextValue || min || 1)}
+        onKeyDown={onKeyDown}
+        data-cell-id={dataCellId}
         className="editable-cell-number"
       />
     )
@@ -65,6 +75,9 @@ function EditableCell({
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
       onPressEnter={onPressEnter}
+      onPaste={onPaste}
+      onKeyDown={onKeyDown}
+      data-cell-id={dataCellId}
       className="editable-cell-input"
     />
   )
