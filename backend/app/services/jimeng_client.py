@@ -122,6 +122,26 @@ def response_keys_summary(payload: Any) -> str:
     return type(payload).__name__
 
 
+def extract_provider_error_message(response: httpx.Response) -> str:
+    """
+    提取供应商错误摘要，帮助前端显示“登录态失效/接口路径错误”等真实原因。
+    这里只读取响应里的 message，不打印请求头、Authorization 或 API Key，并限制长度避免泄露过多响应内容。
+    """
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:200]
+
+    message = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+        message = message or payload.get("message") or payload.get("detail")
+    return str(message or response_keys_summary(payload))[:200]
+
+
 def get_nested(payload: dict[str, Any], path: list[str]) -> Any:
     current: Any = payload
     for key in path:

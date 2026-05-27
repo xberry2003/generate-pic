@@ -1,49 +1,59 @@
-/* 图片库页面样式 */
 .gallery-page {
-  max-width: 1400px;
+  max-width: 1560px;
   margin: 0 auto;
 }
 
 .gallery-card {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
 }
 
 .search-section {
-  padding: 12px 0;
+  padding-bottom: 16px;
   border-bottom: 1px solid #f0f0f0;
-  margin-bottom: 16px;
+}
+
+.gallery-search-input {
+  width: min(420px, 72vw);
+}
+
+.gallery-count {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #8c8c8c;
 }
 
 .image-card {
-  transition: all 0.3s ease;
   height: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .image-card:hover {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  transform: translateY(-4px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.13);
+  transform: translateY(-2px);
 }
 
 .image-wrapper {
-  position: relative;
+  height: 220px;
   overflow: hidden;
-  background: #f0f0f0;
+  background: #f3f5f8;
 }
 
-.image-wrapper img {
-  transition: transform 0.3s ease;
-}
-
-.image-card:hover .image-wrapper img {
-  transform: scale(1.05);
+.gallery-image {
+  width: 100%;
+  height: 220px;
+  object-fit: cover;
 }
 
 .image-title {
+  min-height: 24px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100%;
-  font-weight: 500;
+  font-weight: 600;
+  color: #111827;
 }
 
 .keywords-section {
@@ -52,10 +62,22 @@
   gap: 4px;
 }
 
+.image-file-name,
 .image-time {
-  font-size: 12px;
-  color: #999;
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+}
+
+.image-time {
+  color: #8c8c8c;
+}
+
+.pagination-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
 }

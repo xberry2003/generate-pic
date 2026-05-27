@@ -37,14 +37,35 @@ export const generateImages = async (prompt, keywords = '', count = 1) => {
  * @param {string} query - 搜索关键词
  * @returns {Promise} 返回搜索结果列表
  */
-export const searchImages = async (query = '') => {
+export const searchImages = async (query = '', options = {}) => {
   try {
     const response = await apiClient.get('/images/search', {
-      params: { query },
+      params: {
+        query,
+        // sync_remote=true 时后端会先扫描 SFTP 目录，把服务器里新增的图片写进数据库后再搜索。
+        // 普通输入搜索不传这个参数，避免每输入一个字都触发远程目录扫描。
+        sync_remote: Boolean(options.syncRemote),
+      },
     })
     return response.data
   } catch (error) {
     console.error('搜索图片失败:', error)
+    throw error
+  }
+}
+
+/**
+ * 加载图片库历史记录。
+ * 页面刷新后由这里从后端数据库恢复图片列表；syncRemote=true 时会让后端同步一次 SFTP 远程目录。
+ */
+export const listImages = async (syncRemote = false) => {
+  try {
+    const response = await apiClient.get('/images', {
+      params: { sync_remote: syncRemote },
+    })
+    return response.data
+  } catch (error) {
+    console.error('加载图片库失败:', error)
     throw error
   }
 }

@@ -1,57 +1,39 @@
-"""
-SQLAlchemy ORM 模型定义文件
-
-本文件定义：
-1. Image 模型 - 存储生成或上传的图片信息
-"""
-
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime
+
+from sqlalchemy import Column, DateTime, Integer, String, Text
+
 from app.database import Base
+
 
 class Image(Base):
     """
-    图片数据模型
-    
-    用于存储生成或上传的图片信息
-    
-    属性说明：
-    - id: 图片唯一标识符（自增主键）
-    - prompt: 生成图片时使用的提示词
-    - keywords: 图片的关键词，用逗号分隔
-    - description: 图片的详细描述
-    - file_path: 图片在服务器上的文件路径（相对于 uploads 目录）
-    - preview_url: 图片预览 URL
-    - created_at: 图片创建时间
+    图片元数据模型。
+    数据流：生成/上传/远程同步都会写入这张表，前端刷新后通过 GET /api/images 从数据库恢复图片库。
     """
-    
+
     __tablename__ = "images"
-    
-    # 主键：图片 ID
+
     id = Column(Integer, primary_key=True, index=True)
-    
-    # prompt：用户输入的生成提示词
-    prompt = Column(String(500), nullable=False)
-    
-    # keywords：图片关键词，用逗号分隔
-    # 例如：可爱, 温暖, 日光
+    prompt = Column(String(500), nullable=False, default="")
     keywords = Column(String(255), nullable=True)
-    
-    # description：图片详细描述
     description = Column(Text, nullable=True)
-    
-    # file_path：图片文件的相对路径
-    # 例如：/images/abc123.png
-    file_path = Column(String(255), nullable=False)
-    
-    # preview_url：图片预览 URL，用于前端展示
+
+    # 兼容旧字段：file_path / preview_url 仍然保留，避免破坏已有前端和旧数据。
+    file_path = Column(String(1000), nullable=False)
     preview_url = Column(String(255), nullable=False)
-    
-    # created_at：记录创建时间，用于排序和查询
+
+    # 远程 SFTP 持久化字段。
+    file_name = Column(String(255), nullable=True)
+    storage_provider = Column(String(50), nullable=True)
+    remote_path = Column(String(1000), nullable=True)
+    download_url = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    source = Column(String(50), nullable=True)
+    status = Column(String(50), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
     def __repr__(self):
-        """
-        字符串表示，便于调试
-        """
-        return f"<Image(id={self.id}, prompt='{self.prompt}', file_path='{self.file_path}')>"
+        return f"<Image(id={self.id}, file_name='{self.file_name}', remote_path='{self.remote_path}')>"

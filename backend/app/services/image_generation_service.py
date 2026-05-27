@@ -4,7 +4,7 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
-from app.services.jimeng_client import JimengImageGenerationClient
+from app.services.minimax_client import MiniMaxImageGenerationClient
 
 load_dotenv()
 
@@ -15,7 +15,7 @@ async def call_image_generation_api(prompt: str, keywords: str = "", count: int 
     数据流：路由传入 prompt/keywords/count -> Jimeng 客户端生成 URL/base64 -> 后端下载或解码成 bytes -> 复用 save_image_file 入库。
     """
 
-    client = JimengImageGenerationClient()
+    client = MiniMaxImageGenerationClient()
     image_results = await client.generate(prompt=prompt, keywords=keywords, count=count)
     return [await client.fetch_image_bytes(result) for result in image_results]
 
@@ -27,7 +27,7 @@ def save_image_file(image_data: bytes, filename: str = None) -> str:
     """
 
     backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    save_dir = os.getenv("JIMENG_SAVE_DIR", "uploads/images")
+    save_dir = os.getenv("MINIMAX_SAVE_DIR", os.getenv("JIMENG_SAVE_DIR", "uploads/images"))
     images_dir = os.path.join(backend_dir, save_dir)
     os.makedirs(images_dir, exist_ok=True)
 

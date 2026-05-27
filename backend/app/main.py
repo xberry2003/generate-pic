@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
-from app.routes import generate, images, upload
+from app.routes import generate, images, upload, storage
 
 # 鍒涘缓 FastAPI 搴旂敤瀹炰緥
 app = FastAPI(
@@ -50,6 +50,7 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 app.include_router(generate.router, prefix="/api", tags=["generation"])
 app.include_router(images.router, prefix="/api", tags=["images"])
 app.include_router(upload.router, prefix="/api", tags=["upload"])
+app.include_router(storage.router, prefix="/api", tags=["storage"])
 
 # ========== 搴旂敤浜嬩欢澶勭悊 ==========
 @app.on_event("startup")

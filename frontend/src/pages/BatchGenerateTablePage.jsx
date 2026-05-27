@@ -26,7 +26,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { generateImages, getImageDownloadUrl, searchImages } from '../services/api'
+import { generateImages, getImageDownloadUrl, listImages, searchImages } from '../services/api'
 import EditableCell from '../components/EditableCell'
 import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import StatusTag from '../components/StatusTag'
@@ -80,7 +80,8 @@ const normalizeKeywords = (keywords) => {
 const normalizeImageResponse = (image) => {
   const previewPath = image.preview_url || image.previewUrl || image.file_path || image.url || ''
   const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
-  const downloadUrl = image.download_url || image.downloadUrl || getImageDownloadUrl(image.id)
+  const rawDownloadUrl = image.download_url || image.downloadUrl || getImageDownloadUrl(image.id)
+  const downloadUrl = rawDownloadUrl.startsWith('http') ? rawDownloadUrl : `${API_ORIGIN}${rawDownloadUrl}`
 
   return {
     id: image.id,
@@ -138,6 +139,11 @@ function BatchGenerateTablePage() {
     return () => {
       rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
     }
+  }, [])
+
+  useEffect(() => {
+    // 页面首次加载时从后端数据库读取历史图片，浏览器刷新后不会丢失已生成/上传的记录。
+    loadImageLibrary(false)
   }, [])
 
   const updateRow = (rowId, updater) => {
@@ -270,8 +276,25 @@ function BatchGenerateTablePage() {
     }
   }
 
+  const loadImageLibrary = async (syncRemote = false) => {
+    try {
+      setLoadingSearch(true)
+      const response = await listImages(syncRemote)
+      const nextRows = (response.images || []).map(mapImageToRow)
+      setRows(nextRows.length > 0 ? nextRows : [createEmptyRow()])
+      setSelectedRowKeys([])
+      if (syncRemote) {
+        message.success(`同步完成，新增 ${response.synced || 0} 条远程图片记录`)
+      }
+    } catch (error) {
+      message.error(error?.response?.data?.detail || '加载图片库失败')
+    } finally {
+      setLoadingSearch(false)
+    }
+  }
+
   const handleRefresh = () => {
-    handleSearch('')
+    loadImageLibrary(true)
     setSearchQuery('')
   }
 

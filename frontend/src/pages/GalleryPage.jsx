@@ -1,162 +1,147 @@
-import React, { useState, useEffect } from 'react'
-import {
-  Card,
-  Input,
-  Button,
-  Space,
-  Spin,
-  Alert,
-  Row,
-  Col,
-  Image,
-  Empty,
-  Pagination,
-  Tag,
-  message,
-  Modal,
-  Divider,
-} from 'antd'
-import { SearchOutlined, DownloadOutlined, DeleteOutlined } from '@ant-design/icons'
-import { searchImages, getImageDownloadUrl } from '../services/api'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, Spin, Tag, Typography, message } from 'antd'
+import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { createDebouncedFunction } from '../services/debounce'
+import { getImageDownloadUrl, listImages, searchImages } from '../services/api'
 import './GalleryPage.css'
 
+const { Text } = Typography
+const API_ORIGIN = 'http://localhost:8000'
+
 /**
- * 图片库页面组件
- * 主要功能：
- * 1. 展示图片缩略图、prompt、keywords、创建时间
- * 2. 支持按关键词搜索
- * 3. 支持点击下载图片
- * 4. 分页展示
+ * 把后端返回的图片字段统一成图库卡片需要的结构。
+ * 数据流：数据库记录 -> 前端展示模型；描述优先使用 description/prompt/file_name，图片地址仍然走后端 preview/download 接口。
+ */
+const normalizeGalleryImage = (image) => {
+  const title = image.description || image.prompt || image.file_name || `image-${image.id}`
+  const previewPath = image.preview_url || image.url || `/api/images/${image.id}/preview`
+  const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
+  const downloadPath = image.download_url || getImageDownloadUrl(image.id)
+  const downloadUrl = downloadPath.startsWith('http') ? downloadPath : `${API_ORIGIN}${downloadPath}`
+
+  return {
+    ...image,
+    title,
+    previewUrl,
+    downloadUrl,
+    keywordsText: Array.isArray(image.keywords) ? image.keywords.join(',') : image.keywords || '',
+  }
+}
+
+/**
+ * 图片库页面。
+ * 职责：
+ * 1. 首次进入时调用 GET /api/images?sync_remote=true，把服务器目录里的图片同步进数据库并展示。
+ * 2. 用户输入搜索词时调用 GET /api/images/search，只在数据库里按描述、文件名、prompt、keywords 即时筛选。
+ * 3. 点击“刷新全部”时再次同步 SFTP 目录，保证公司服务器新增文件也能进入图片库。
  */
 function GalleryPage() {
-  // 搜索关键词
   const [searchQuery, setSearchQuery] = useState('')
-  
-  // 图片列表数据
   const [images, setImages] = useState([])
-  
-  // 是否正在加载
   const [loading, setLoading] = useState(false)
-  
-  // 错误信息
   const [error, setError] = useState(null)
-  
-  // 当前分页的页码
   const [currentPage, setCurrentPage] = useState(1)
-  
-  // 每页显示的图片数量
   const pageSize = 12
+  const debouncedSearchRef = useRef(null)
 
-  /**
-   * 加载图片列表
-   * 根据搜索关键词从后端获取图片
-   */
-  const loadImages = async (query = '') => {
+  const setImageResponse = (response) => {
+    setImages((response.images || []).map(normalizeGalleryImage))
+    setCurrentPage(1)
+  }
+
+  const loadImages = async ({ query = '', syncRemote = false, showToast = false } = {}) => {
     try {
       setLoading(true)
       setError(null)
-      
-      // 调用后端 API 搜索图片
-      const response = await searchImages(query)
-      
-      // 将获取的图片数据存储到状态中
-      setImages(response.images || [])
-      setCurrentPage(1) // 搜索后重置到第一页
+      const response = query.trim()
+        ? await searchImages(query, { syncRemote })
+        : await listImages(syncRemote)
+
+      setImageResponse(response)
+      if (showToast) {
+        const synced = response.synced || 0
+        message.success(syncRemote ? `已刷新服务器图片，新增 ${synced} 张` : '已刷新图片库')
+      }
     } catch (err) {
-      setError(err.message || '加载图片失败，请稍后重试')
-      console.error('加载错误:', err)
+      const detail = err?.response?.data?.detail || err.message || '加载图片失败，请稍后重试'
+      setError(detail)
+      message.error(detail)
     } finally {
       setLoading(false)
     }
   }
 
-  /**
-   * 组件挂载时加载所有图片
-   */
   useEffect(() => {
-    loadImages()
+    // 首次进入图片库时同步一次服务器目录；之后搜索只查数据库，保证输入筛选速度更轻。
+    loadImages({ syncRemote: true })
   }, [])
 
-  /**
-   * 处理搜索按钮点击
-   * 使用搜索关键词查询图片
-   */
-  const handleSearch = () => {
-    loadImages(searchQuery)
-  }
+  useEffect(() => {
+    debouncedSearchRef.current = createDebouncedFunction((query) => {
+      loadImages({ query })
+    }, 500)
 
-  /**
-   * 处理回车键搜索
-   */
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      handleSearch()
+    return () => {
+      debouncedSearchRef.current?.cancel?.()
     }
+  }, [])
+
+  const handleSearchChange = (event) => {
+    const value = event.target.value
+    setSearchQuery(value)
+    debouncedSearchRef.current?.(value)
   }
 
-  /**
-   * 处理刷新按钮点击
-   * 清空搜索条件，加载所有图片
-   */
+  const handleSearch = () => {
+    debouncedSearchRef.current?.cancel?.()
+    loadImages({ query: searchQuery })
+  }
+
   const handleRefresh = () => {
     setSearchQuery('')
-    loadImages('')
+    debouncedSearchRef.current?.cancel?.()
+    loadImages({ syncRemote: true, showToast: true })
   }
 
-  /**
-   * 处理下载图片
-   */
-  const handleDownload = (imageId, fileName) => {
-    const url = getImageDownloadUrl(imageId)
+  const handleDownload = (image) => {
     const link = document.createElement('a')
-    link.href = url
-    link.download = fileName || `image-${imageId}.png`
+    link.href = image.downloadUrl
+    link.download = image.file_name || `image-${image.id}.png`
     link.click()
-    message.success('开始下载...')
   }
 
-  /**
-   * 计算分页数据
-   * 根据当前页码和每页数量获取该页的图片数据
-   */
-  const paginatedImages = images.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
+  const paginatedImages = useMemo(
+    () => images.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [images, currentPage]
   )
 
   return (
     <div className="gallery-page">
-      <Card title="🖼️ 图片库" className="gallery-card">
+      <Card className="gallery-card" styles={{ body: { padding: 28 } }}>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          {/* 搜索区域 */}
           <div className="search-section">
-            <Space>
+            <Space wrap>
               <Input
-                placeholder="输入关键词搜索图片（可搜索 prompt、keywords、描述）"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-                style={{ width: '300px' }}
                 allowClear
+                prefix={<SearchOutlined />}
+                placeholder="输入描述或文件名搜索服务器图片"
+                value={searchQuery}
+                onChange={handleSearchChange}
+                onPressEnter={handleSearch}
+                className="gallery-search-input"
               />
-              <Button
-                type="primary"
-                icon={<SearchOutlined />}
-                onClick={handleSearch}
-                loading={loading}
-              >
+              <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch} loading={loading}>
                 搜索
               </Button>
-              <Button onClick={handleRefresh} disabled={loading}>
-                🔄 刷新全部
+              <Button icon={<ReloadOutlined />} onClick={handleRefresh} disabled={loading}>
+                刷新全部
               </Button>
             </Space>
-            <div style={{ marginTop: '8px', fontSize: '12px', color: '#999' }}>
+            <div className="gallery-count">
               共找到 {images.length} 张图片
             </div>
           </div>
 
-          {/* 错误提示 */}
           {error && (
             <Alert
               message="加载失败"
@@ -167,12 +152,10 @@ function GalleryPage() {
             />
           )}
 
-          {/* 加载动画 */}
-          {loading && <Spin tip="正在加载图片..." size="large" />}
+          {loading && <Spin tip="正在加载服务器图片..." size="large" />}
 
-          {/* 图片网格展示 */}
           {!loading && paginatedImages.length > 0 && (
-            <Row gutter={[16, 16]}>
+            <Row gutter={[20, 20]}>
               {paginatedImages.map((image) => (
                 <Col key={image.id} xs={24} sm={12} md={8} lg={6}>
                   <Card
@@ -181,13 +164,9 @@ function GalleryPage() {
                     cover={
                       <div className="image-wrapper">
                         <Image
-                          src={`http://localhost:8000${image.preview_url}`}
-                          alt={image.prompt}
-                          style={{
-                            width: '100%',
-                            height: '200px',
-                            objectFit: 'cover',
-                          }}
+                          src={image.previewUrl}
+                          alt={image.title}
+                          className="gallery-image"
                           preview
                         />
                       </div>
@@ -197,32 +176,30 @@ function GalleryPage() {
                         type="primary"
                         size="small"
                         icon={<DownloadOutlined />}
-                        onClick={() => handleDownload(image.id, `image-${image.id}.png`)}
+                        onClick={() => handleDownload(image)}
                       >
                         下载
                       </Button>,
                     ]}
                   >
                     <Card.Meta
-                      title={
-                        <div className="image-title">
-                          {image.prompt.substring(0, 30)}
-                          {image.prompt.length > 30 ? '...' : ''}
-                        </div>
-                      }
+                      title={<div className="image-title" title={image.title}>{image.title}</div>}
                       description={
                         <Space direction="vertical" style={{ width: '100%' }} size="small">
-                          {image.keywords && (
+                          {image.keywordsText && (
                             <div className="keywords-section">
-                              {image.keywords.split(',').map((keyword, idx) => (
-                                <Tag key={idx} color="blue" style={{ marginBottom: '4px' }}>
+                              {image.keywordsText.split(',').filter(Boolean).map((keyword, idx) => (
+                                <Tag key={`${keyword}-${idx}`} color="blue">
                                   {keyword.trim()}
                                 </Tag>
                               ))}
                             </div>
                           )}
+                          <Text type="secondary" className="image-file-name" title={image.file_name}>
+                            {image.file_name || '服务器图片'}
+                          </Text>
                           <div className="image-time" title={new Date(image.created_at).toLocaleString()}>
-                            {new Date(image.created_at).toLocaleString()}
+                            {image.created_at ? new Date(image.created_at).toLocaleString() : ''}
                           </div>
                         </Space>
                       }
@@ -233,12 +210,10 @@ function GalleryPage() {
             </Row>
           )}
 
-          {/* 空状态 */}
-          {!loading && images.length === 0 && <Empty description="还没有图片，请先生成或上传图片" />}
+          {!loading && images.length === 0 && <Empty description="没有匹配的服务器图片" />}
 
-          {/* 分页控件 */}
           {!loading && images.length > pageSize && (
-            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}>
+            <div className="pagination-row">
               <Pagination
                 current={currentPage}
                 pageSize={pageSize}

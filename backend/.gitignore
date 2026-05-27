@@ -55,3 +55,9 @@ Thumbs.db
 # 上传的文件（如果分离存储）
 uploads/*
 !uploads/.gitkeep
+
+# SSH private keys
+keys/
+*.pem
+*.key
+*.ppk

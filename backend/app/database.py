@@ -8,7 +8,7 @@
 """
 
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import StaticPool
 
@@ -73,4 +73,32 @@ def init_db():
     
     # 鍒涘缓鎵€鏈夎〃
     Base.metadata.create_all(bind=engine)
+    ensure_image_columns()
     print(f"Database initialized: {DATABASE_URL}")
+
+
+def ensure_image_columns():
+    """
+    兼容旧 SQLite 数据库。
+    SQLAlchemy 的 create_all 不会给已存在表自动加列，所以这里用轻量 ALTER TABLE 补齐新增字段。
+    """
+
+    if "sqlite" not in DATABASE_URL:
+        return
+
+    expected_columns = {
+        "file_name": "VARCHAR(255)",
+        "storage_provider": "VARCHAR(50)",
+        "remote_path": "VARCHAR(1000)",
+        "download_url": "VARCHAR(255)",
+        "mime_type": "VARCHAR(100)",
+        "file_size": "INTEGER",
+        "source": "VARCHAR(50)",
+        "status": "VARCHAR(50)",
+        "updated_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        existing = {row[1] for row in connection.execute(text("PRAGMA table_info(images)"))}
+        for column_name, column_type in expected_columns.items():
+            if column_name not in existing:
+                connection.execute(text(f"ALTER TABLE images ADD COLUMN {column_name} {column_type}"))
