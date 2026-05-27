@@ -72,9 +72,10 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
         generated_images = []
         for index, image_data in enumerate(image_data_list):
             png_bytes = normalize_image_to_png_bytes(image_data)
+            image_description = (request.description or request.prompt).strip()
             file_name = generate_image_filename(
-                description=request.description,
-                prompt=request.description or request.prompt,
+                description=image_description,
+                prompt=request.prompt,
             )
             try:
                 remote_info = storage.upload_bytes(png_bytes, file_name)
@@ -90,7 +91,7 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
             db_image = create_image_record(
                 db,
                 prompt=request.prompt,
-                description=request.description or f"Generated image {index + 1}",
+                description=image_description,
                 keywords=keyword_text,
                 remote_info=remote_info,
                 source="generated",

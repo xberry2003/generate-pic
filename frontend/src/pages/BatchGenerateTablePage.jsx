@@ -26,7 +26,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { generateImages, getImageDownloadUrl, listImages, searchImages } from '../services/api'
+import { API_ORIGIN, generateImages, getImageDownloadUrl, searchImages } from '../services/api'
 import EditableCell from '../components/EditableCell'
 import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import StatusTag from '../components/StatusTag'
@@ -34,8 +34,6 @@ import UploadImageModal from '../components/UploadImageModal'
 import './BatchGenerateTablePage.css'
 
 const { Text } = Typography
-const API_ORIGIN = 'http://localhost:8000'
-
 // 前端表格任务状态。状态值沿用原生成页逻辑，避免改变现有交互语义。
 const STATUS = {
   IDLE: 'idle',
@@ -78,9 +76,9 @@ const normalizeKeywords = (keywords) => {
  * 兼容字段：后端当前返回 preview_url；如果以后返回 file_path、download_url，也只在这里适配，不改真实接口。
  */
 const normalizeImageResponse = (image) => {
-  const previewPath = image.preview_url || image.previewUrl || image.file_path || image.url || ''
+  const previewPath = image.previewUrl || image.preview_url || image.file_path || image.url || ''
   const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
-  const rawDownloadUrl = image.download_url || image.downloadUrl || getImageDownloadUrl(image.id)
+  const rawDownloadUrl = image.downloadUrl || image.download_url || getImageDownloadUrl(image.id)
   const downloadUrl = rawDownloadUrl.startsWith('http') ? rawDownloadUrl : `${API_ORIGIN}${rawDownloadUrl}`
 
   return {
@@ -117,7 +115,7 @@ const mapImageToRow = (image) => ({
  * 3. 把后端图片返回适配为 resultImages，供表格缩略图和详情抽屉使用。
  */
 function BatchGenerateTablePage() {
-  const [rows, setRows] = useState([createEmptyRow()])
+  const [rows, setRows] = useState([])
   const [selectedRowKeys, setSelectedRowKeys] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [loadingSearch, setLoadingSearch] = useState(false)
@@ -139,11 +137,6 @@ function BatchGenerateTablePage() {
     return () => {
       rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
     }
-  }, [])
-
-  useEffect(() => {
-    // 页面首次加载时从后端数据库读取历史图片，浏览器刷新后不会丢失已生成/上传的记录。
-    loadImageLibrary(false)
   }, [])
 
   const updateRow = (rowId, updater) => {
@@ -180,7 +173,8 @@ function BatchGenerateTablePage() {
 
     try {
       updateRow(rowId, { status: STATUS.GENERATING, errorMessage: '' })
-      const response = await generateImages(prompt, keywordsToRequestString(row.keywords), row.count)
+      const description = row.description.trim() || prompt
+      const response = await generateImages(prompt, keywordsToRequestString(row.keywords), row.count, description)
       const resultImages = (response.images || []).map(normalizeImageResponse)
 
       updateRow(rowId, {
@@ -266,7 +260,7 @@ function BatchGenerateTablePage() {
       setLoadingSearch(true)
       const response = await searchImages(query)
       const nextRows = (response.images || []).map(mapImageToRow)
-      setRows(nextRows.length > 0 ? nextRows : [createEmptyRow()])
+      setRows(nextRows)
       setSelectedRowKeys([])
       message.success(`找到 ${response.total || nextRows.length} 张图片`)
     } catch (error) {
@@ -276,25 +270,9 @@ function BatchGenerateTablePage() {
     }
   }
 
-  const loadImageLibrary = async (syncRemote = false) => {
-    try {
-      setLoadingSearch(true)
-      const response = await listImages(syncRemote)
-      const nextRows = (response.images || []).map(mapImageToRow)
-      setRows(nextRows.length > 0 ? nextRows : [createEmptyRow()])
-      setSelectedRowKeys([])
-      if (syncRemote) {
-        message.success(`同步完成，新增 ${response.synced || 0} 条远程图片记录`)
-      }
-    } catch (error) {
-      message.error(error?.response?.data?.detail || '加载图片库失败')
-    } finally {
-      setLoadingSearch(false)
-    }
-  }
-
   const handleRefresh = () => {
-    loadImageLibrary(true)
+    setRows([])
+    setSelectedRowKeys([])
     setSearchQuery('')
   }
 

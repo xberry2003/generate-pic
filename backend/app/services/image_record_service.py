@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -16,19 +17,26 @@ def image_to_dict(image: ImageModel) -> dict:
     download_url = image.download_url or f"/api/images/{image.id}/download"
     return {
         "id": image.id,
+        "title": image.description or image.prompt or image.file_name or f"image-{image.id}",
         "prompt": image.prompt or "",
         "description": image.description or "",
         "keywords": image.keywords or "",
         "file_name": image.file_name or "",
+        "fileName": image.file_name or "",
         "storage_provider": image.storage_provider or "",
         "remote_path": image.remote_path or "",
+        "cosKey": image.remote_path or "",
         "preview_url": preview_url,
+        "previewUrl": preview_url,
         "download_url": download_url,
+        "downloadUrl": download_url,
         "created_at": image.created_at,
+        "createdAt": image.created_at,
         "updated_at": image.updated_at,
         "status": image.status or "done",
         "mime_type": image.mime_type or "image/png",
         "file_size": image.file_size or 0,
+        "size": image.file_size or 0,
         "source": image.source or "",
         # 兼容旧前端字段命名。
         "url": preview_url,
@@ -54,7 +62,7 @@ def create_image_record(
         file_path=remote_info.remote_path,
         preview_url="",  # 先落库，拿到 id 后再写后端代理地址
         file_name=remote_info.file_name,
-        storage_provider="sftp",
+        storage_provider=os.getenv("STORAGE_PROVIDER", "sftp"),
         remote_path=remote_info.remote_path,
         download_url="",
         mime_type=remote_info.mime_type,

@@ -115,14 +115,12 @@ def generate_image_filename(description: str = "", prompt: str = "") -> str:
     数据流：前端描述 -> 清洗非法路径字符 -> 截断过长主体 -> 追加时间戳和短 uuid -> 固定 .png 后缀。
     """
 
-    base_text = (description or prompt or "image").strip().lower()
+    base_text = (description or prompt or "image").strip()
     base_text = re.sub(r'[/\\:*?"<>|\r\n\t]+', " ", base_text)
-    base_text = re.sub(r"[^a-z0-9_-]+", "-", base_text)
-    base_text = re.sub(r"-+", "-", base_text).strip("-_")
-    base_text = base_text[:60].strip("-_") or "image"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    short_id = uuid.uuid4().hex[:6]
-    return f"{base_text}_{timestamp}_{short_id}.png"
+    base_text = re.sub(r"\s+", "", base_text)
+    base_text = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9_-]+", "", base_text)
+    base_text = base_text[:30].strip("-_") or "image"
+    return f"{base_text}.png"
 
 
 def description_from_filename(file_name: str) -> str:
@@ -181,8 +179,30 @@ class SFTPStorageClient:
         prefix = self.config["cos_key_prefix"]
         return posixpath.join(prefix, safe_name) if prefix else safe_name
 
+    def cos_object_exists(self, key: str) -> bool:
+        try:
+            self.cos_client().head_object(Bucket=self.config["cos_bucket"], Key=key)
+            return True
+        except CosServiceError as exc:
+            if getattr(exc, "get_status_code", lambda: None)() == 404:
+                return False
+            raise RemoteStorageError(f"COS head object failed for {key}: {exc.__class__.__name__}: {exc}") from exc
+        except CosClientError as exc:
+            raise RemoteStorageError(f"COS head object failed for {key}: {exc.__class__.__name__}: {exc}") from exc
+
+    def unique_cos_key_for(self, remote_filename: str) -> tuple[str, str]:
+        safe_name = posixpath.basename(remote_filename)
+        stem, ext = posixpath.splitext(safe_name)
+        ext = ext or ".png"
+        key = self.cos_key_for(f"{stem}{ext}")
+        if not self.cos_object_exists(key):
+            return key, f"{stem}{ext}"
+        suffix = datetime.now().strftime("%H%M%S")
+        file_name = f"{stem}_{suffix}{ext}"
+        return self.cos_key_for(file_name), file_name
+
     def upload_bytes_to_cos(self, data: bytes, remote_filename: str) -> RemoteFileInfo:
-        key = self.cos_key_for(remote_filename)
+        key, file_name = self.unique_cos_key_for(remote_filename)
         try:
             self.cos_client().put_object(
                 Bucket=self.config["cos_bucket"],
@@ -194,7 +214,7 @@ class SFTPStorageClient:
             raise RemoteStorageError(f"COS upload failed for {key}: {exc.__class__.__name__}: {exc}") from exc
 
         return RemoteFileInfo(
-            file_name=posixpath.basename(remote_filename),
+            file_name=file_name,
             remote_path=key,
             file_size=len(data),
             modified_at=datetime.utcnow(),
@@ -355,6 +375,52 @@ class SFTPStorageClient:
         默认扫描 SFTP_REMOTE_DIR；如果配置了 SFTP_SYNC_DIRS，则额外扫描这些服务器目录。
         只接受 png、jpg、jpeg、webp，跳过其他文件。
         """
+
+        if self.config["provider"] == "cos":
+            prefix = self.config["cos_key_prefix"].strip("/")
+            prefix = f"{prefix}/" if prefix else ""
+            marker = ""
+            results = []
+            client = self.cos_client()
+            while True:
+                response = client.list_objects(
+                    Bucket=self.config["cos_bucket"],
+                    Prefix=prefix,
+                    Marker=marker,
+                    MaxKeys=1000,
+                )
+                contents = response.get("Contents") or []
+                if isinstance(contents, dict):
+                    contents = [contents]
+                for item in contents:
+                    key = item.get("Key", "")
+                    file_name = posixpath.basename(key)
+                    ext = posixpath.splitext(file_name)[1].lower()
+                    if not file_name or ext not in ALLOWED_IMAGE_EXTENSIONS:
+                        continue
+                    last_modified = item.get("LastModified")
+                    modified_at = None
+                    if last_modified:
+                        try:
+                            modified_at = datetime.fromisoformat(last_modified.replace("Z", "+00:00")).replace(tzinfo=None)
+                        except ValueError:
+                            modified_at = None
+                    mime_type = "image/png" if ext == ".png" else f"image/{ext.lstrip('.')}"
+                    results.append(
+                        RemoteFileInfo(
+                            file_name=file_name,
+                            remote_path=key,
+                            file_size=int(item.get("Size") or 0),
+                            modified_at=modified_at,
+                            mime_type=mime_type,
+                        )
+                    )
+                if response.get("IsTruncated") != "true":
+                    break
+                marker = response.get("NextMarker") or contents[-1].get("Key", "")
+                if not marker:
+                    break
+            return results
 
         raw_dirs = [self.config["remote_dir"], *self.config.get("sync_dirs", [])]
         remote_dirs = []

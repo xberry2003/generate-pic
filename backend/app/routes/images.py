@@ -1,4 +1,7 @@
 import os
+import posixpath
+from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -9,9 +12,20 @@ from app.database import get_db
 from app.models import Image as ImageModel
 from app.services.image_generation_service import get_full_image_path
 from app.services.image_record_service import image_to_dict, sync_remote_files_to_db
-from app.services.remote_storage_service import RemoteStorageError, SFTPStorageClient
+from app.services.remote_storage_service import RemoteStorageError, SFTPStorageClient, description_from_filename
 
 router = APIRouter()
+
+
+def mime_type_for_filename(file_name: str) -> str:
+    ext = os.path.splitext(file_name)[1].lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(ext, "application/octet-stream")
 
 
 def query_images(db: Session):
@@ -30,9 +44,74 @@ def sync_remote_images(db: Session) -> int:
     return sync_remote_files_to_db(db, remote_files)
 
 
+def cos_file_to_dict(remote_file, db_by_path: dict[str, ImageModel], index: int) -> dict:
+    db_image = db_by_path.get(remote_file.remote_path)
+    encoded_key = quote(remote_file.remote_path, safe="")
+    preview_url = f"/api/images/preview?key={encoded_key}"
+    download_url = f"/api/images/download?key={encoded_key}"
+    title = remote_file.file_name
+    if db_image:
+        title = db_image.description or db_image.prompt or remote_file.file_name
+        payload = {
+            "id": db_image.id,
+            "prompt": db_image.prompt or "",
+            "description": db_image.description or "",
+            "keywords": db_image.keywords or "",
+            "created_at": db_image.created_at,
+            "updated_at": db_image.updated_at,
+            "source": db_image.source or "cos",
+            "status": db_image.status or "done",
+        }
+    else:
+        description = description_from_filename(remote_file.file_name)
+        title = description
+        payload = {
+            "id": f"cos-{index}",
+            "prompt": "",
+            "description": description,
+            "keywords": "",
+            "created_at": remote_file.modified_at,
+            "updated_at": remote_file.modified_at,
+            "status": "done",
+            "source": "cos",
+        }
+    payload.update(
+        {
+            "title": title,
+            "file_name": remote_file.file_name,
+            "fileName": remote_file.file_name,
+            "storage_provider": "cos",
+            "remote_path": remote_file.remote_path,
+            "cosKey": remote_file.remote_path,
+            "preview_url": preview_url,
+            "previewUrl": preview_url,
+            "download_url": download_url,
+            "downloadUrl": download_url,
+            "url": preview_url,
+            "mime_type": remote_file.mime_type,
+            "file_size": remote_file.file_size,
+            "size": remote_file.file_size,
+            "lastModified": remote_file.modified_at,
+            "createdAt": payload.get("created_at") or remote_file.modified_at,
+        }
+    )
+    return payload
+
+
+def list_cos_images_with_metadata(db: Session) -> list[dict]:
+    remote_files = SFTPStorageClient().list_images()
+    remote_paths = [remote_file.remote_path for remote_file in remote_files]
+    db_images = []
+    if remote_paths:
+        db_images = db.query(ImageModel).filter(ImageModel.remote_path.in_(remote_paths)).all()
+    db_by_path = {image.remote_path: image for image in db_images if image.remote_path}
+    remote_files.sort(key=lambda item: item.modified_at or datetime.min, reverse=True)
+    return [cos_file_to_dict(remote_file, db_by_path, index) for index, remote_file in enumerate(remote_files)]
+
+
 @router.get("/images")
 async def list_images(
-    sync_remote: bool = Query(False, description="Whether to sync SFTP remote directory before listing"),
+    sync_remote: bool = Query(False, description="Deprecated; images are listed from COS directly"),
     db: Session = Depends(get_db),
 ):
     """
@@ -41,13 +120,12 @@ async def list_images(
     """
 
     try:
-        synced = sync_remote_images(db) if sync_remote else 0
-        images = query_images(db).all()
+        images = list_cos_images_with_metadata(db)
         return {
             "success": True,
             "total": len(images),
-            "synced": synced,
-            "images": [image_to_dict(image) for image in images],
+            "synced": 0,
+            "images": images,
         }
     except RemoteStorageError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -67,29 +145,28 @@ async def search_images(
     """
 
     try:
-        synced = sync_remote_images(db) if sync_remote else 0
-        search_query = db.query(ImageModel)
         clean_query = query.strip()
-
+        images = list_cos_images_with_metadata(db)
         if clean_query:
-            search_term = f"%{clean_query}%"
-            search_query = search_query.filter(
-                or_(
-                    ImageModel.prompt.ilike(search_term),
-                    ImageModel.keywords.ilike(search_term),
-                    ImageModel.description.ilike(search_term),
-                    ImageModel.file_name.ilike(search_term),
-                )
-            )
+            needle = clean_query.lower()
+            images = [
+                image
+                for image in images
+                if needle
+                in " ".join(
+                    str(image.get(field, ""))
+                    for field in ("prompt", "description", "keywords", "file_name", "cosKey")
+                ).lower()
+            ]
 
-        total = search_query.count()
-        images = search_query.order_by(desc(ImageModel.created_at)).offset(skip).limit(limit).all()
+        total = len(images)
+        images = images[skip : skip + limit]
         return {
             "success": True,
             "message": "Search succeeded",
             "total": total,
-            "synced": synced,
-            "images": [image_to_dict(image) for image in images],
+            "synced": 0,
+            "images": images,
         }
     except RemoteStorageError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -122,6 +199,55 @@ def load_image_bytes(image_id: int, db: Session) -> tuple[ImageModel, bytes]:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def validate_cos_key(key: str) -> str:
+    prefix = SFTPStorageClient().config["cos_key_prefix"].strip("/")
+    clean_key = key.strip().lstrip("/")
+    if not clean_key or ".." in clean_key.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid COS key")
+    if prefix and not clean_key.startswith(f"{prefix}/"):
+        raise HTTPException(status_code=403, detail="COS key is outside image prefix")
+    return clean_key
+
+
+def content_disposition(disposition: str, file_name: str) -> str:
+    encoded_name = quote(file_name)
+    return f"{disposition}; filename=\"image\"; filename*=UTF-8''{encoded_name}"
+
+
+@router.get("/images/preview")
+@router.get("/images/cos/preview")
+async def preview_cos_image(key: str = Query(..., description="COS object key")):
+    clean_key = validate_cos_key(key)
+    file_name = posixpath.basename(clean_key)
+    mime_type = mime_type_for_filename(file_name)
+    try:
+        image_bytes = SFTPStorageClient().download_bytes(clean_key)
+    except RemoteStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return Response(
+        content=image_bytes,
+        media_type=mime_type,
+        headers={"Content-Disposition": content_disposition("inline", file_name)},
+    )
+
+
+@router.get("/images/download")
+@router.get("/images/cos/download")
+async def download_cos_image(key: str = Query(..., description="COS object key")):
+    clean_key = validate_cos_key(key)
+    file_name = posixpath.basename(clean_key)
+    mime_type = mime_type_for_filename(file_name)
+    try:
+        image_bytes = SFTPStorageClient().download_bytes(clean_key)
+    except RemoteStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return Response(
+        content=image_bytes,
+        media_type=mime_type,
+        headers={"Content-Disposition": content_disposition("attachment", file_name)},
+    )
+
+
 @router.get("/images/{image_id}/preview")
 async def preview_image(image_id: int, db: Session = Depends(get_db)):
     """图片预览代理接口：从数据库 id 找远程路径，通过后端读取后 inline 返回给前端 img 标签。"""
@@ -130,7 +256,7 @@ async def preview_image(image_id: int, db: Session = Depends(get_db)):
     return Response(
         content=image_bytes,
         media_type=image.mime_type or "image/png",
-        headers={"Content-Disposition": f'inline; filename="{image.file_name or f"image_{image_id}.png"}"'},
+        headers={"Content-Disposition": content_disposition("inline", image.file_name or f"image_{image_id}.png")},
     )
 
 
@@ -143,5 +269,5 @@ async def download_image(image_id: int, db: Session = Depends(get_db)):
     return Response(
         content=image_bytes,
         media_type=image.mime_type or "image/png",
-        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+        headers={"Content-Disposition": content_disposition("attachment", file_name)},
     )

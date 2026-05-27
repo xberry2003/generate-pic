@@ -11,6 +11,9 @@ const apiClient = axios.create({
   },
 })
 
+export const API_BASE_URL = apiClient.defaults.baseURL
+export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '')
+
 /**
  * 生成图片服务
  * @param {string} prompt - 用户输入的文生图提示词
@@ -18,12 +21,13 @@ const apiClient = axios.create({
  * @param {number} count - 生成图片数量，默认为 1
  * @returns {Promise} 返回生成的图片信息
  */
-export const generateImages = async (prompt, keywords = '', count = 1) => {
+export const generateImages = async (prompt, keywords = '', count = 1, description = '') => {
   try {
     const response = await apiClient.post('/generate', {
       prompt,
       keywords,
       count,
+      description,
     })
     return response.data
   } catch (error) {
@@ -76,7 +80,7 @@ export const listImages = async (syncRemote = false) => {
  * @returns {string} 图片下载链接
  */
 export const getImageDownloadUrl = (imageId) => {
-  return `http://localhost:8000/api/images/${imageId}/download`
+  return `${API_BASE_URL}/images/${imageId}/download`
 }
 
 /**

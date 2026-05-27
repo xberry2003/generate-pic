@@ -2,26 +2,27 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, Spin, Tag, Typography, message } from 'antd'
 import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { getImageDownloadUrl, listImages, searchImages } from '../services/api'
+import { API_ORIGIN, getImageDownloadUrl, listImages, searchImages } from '../services/api'
 import './GalleryPage.css'
 
 const { Text } = Typography
-const API_ORIGIN = 'http://localhost:8000'
-
 /**
  * 把后端返回的图片字段统一成图库卡片需要的结构。
  * 数据流：数据库记录 -> 前端展示模型；描述优先使用 description/prompt/file_name，图片地址仍然走后端 preview/download 接口。
  */
 const normalizeGalleryImage = (image) => {
-  const title = image.description || image.prompt || image.file_name || `image-${image.id}`
-  const previewPath = image.preview_url || image.url || `/api/images/${image.id}/preview`
+  const fileName = image.file_name || image.fileName || ''
+  const title = image.description || image.prompt || fileName || image.cosKey || `image-${image.id}`
+  const previewPath = image.previewUrl || image.preview_url || image.url || `/api/images/${image.id}/preview`
   const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
-  const downloadPath = image.download_url || getImageDownloadUrl(image.id)
+  const downloadPath = image.downloadUrl || image.download_url || getImageDownloadUrl(image.id)
   const downloadUrl = downloadPath.startsWith('http') ? downloadPath : `${API_ORIGIN}${downloadPath}`
 
   return {
     ...image,
     title,
+    file_name: fileName,
+    created_at: image.created_at || image.lastModified,
     previewUrl,
     downloadUrl,
     keywordsText: Array.isArray(image.keywords) ? image.keywords.join(',') : image.keywords || '',
@@ -60,7 +61,7 @@ function GalleryPage() {
       setImageResponse(response)
       if (showToast) {
         const synced = response.synced || 0
-        message.success(syncRemote ? `已刷新服务器图片，新增 ${synced} 张` : '已刷新图片库')
+        message.success(syncRemote ? `已刷新 COS 图片库，共 ${response.total || 0} 张` : '已刷新图片库')
       }
     } catch (err) {
       const detail = err?.response?.data?.detail || err.message || '加载图片失败，请稍后重试'

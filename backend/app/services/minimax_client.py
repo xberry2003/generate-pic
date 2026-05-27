@@ -175,7 +175,13 @@ def parse_minimax_response(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not value:
             continue
         items = value if isinstance(value, list) else [value]
-        images = [normalized for item in items if (normalized := normalize_image_item(item))]
+        flattened_items = []
+        for item in items:
+            if isinstance(item, list):
+                flattened_items.extend(item)
+            else:
+                flattened_items.append(item)
+        images = [normalized for item in flattened_items if (normalized := normalize_image_item(item))]
         if images:
             return images
 

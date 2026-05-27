@@ -17,7 +17,7 @@ import {
   Statistic,
 } from 'antd'
 import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
-import { generateImages, getImageDownloadUrl } from '../services/api'
+import { API_ORIGIN, generateImages, getImageDownloadUrl } from '../services/api'
 import { createDebouncedFunction } from '../services/debounce'
 import './GeneratePage.css'
 
@@ -293,7 +293,7 @@ function GeneratePage() {
                         cover={
                           <div className="image-preview">
                             <Image
-                              src={`http://localhost:8000${image.preview_url}`}
+                              src={`${API_ORIGIN}${image.previewUrl || image.preview_url}`}
                               alt={`Generated ${index + 1}`}
                               style={{ width: '100%', height: '200px', objectFit: 'cover' }}
                               preview
