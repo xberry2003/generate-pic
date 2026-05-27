@@ -14,10 +14,11 @@ import {
   message,
 } from 'antd'
 import {
+  ImportOutlined,
+  SyncOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
-  FilterOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -25,7 +26,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { API_ORIGIN, generateImageDraft, getImageDownloadUrl, searchImages, uploadGeneratedImage } from '../services/api'
+import { API_ORIGIN, expandPrompt, generateImageDraft, getImageDownloadUrl, searchImages, uploadGeneratedImage } from '../services/api'
 import EditableCell from '../components/EditableCell'
 import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import StatusTag from '../components/StatusTag'
@@ -35,6 +36,13 @@ import './BatchGenerateTablePage.css'
 const { Text } = Typography
 const DEFAULT_BATCH_ROWS = 10
 const MAX_GENERATE_CONCURRENCY = 2
+const PROMPT_EXPAND_DEBOUNCE_MS = 5000
+const HEADER_ALIASES = {
+  originalPrompt: ['prompt', '原始描述', 'originalPrompt'],
+  description: ['expandedPrompt', '描述扩充', 'description'],
+  keywords: ['keywords', '关键词'],
+  count: ['count', '数量'],
+}
 // 前端表格任务状态。状态值沿用原生成页逻辑，避免改变现有交互语义。
 const STATUS = {
   IDLE: 'idle',
@@ -55,6 +63,9 @@ const createEmptyRow = (overrides = {}) => ({
   id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   originalPrompt: '',
   description: '',
+  expandedPromptTouched: false,
+  expandingPrompt: false,
+  expandError: '',
   keywords: [],
   count: 1,
   status: STATUS.IDLE,
@@ -84,6 +95,128 @@ const normalizeKeywords = (keywords) => {
     .split(/[,，]/)
     .map((keyword) => keyword.trim())
     .filter(Boolean)
+}
+
+const parseCsvText = (csvText) => {
+  const text = String(csvText || '').replace(/^\uFEFF/, '')
+  const rows = []
+  let current = ''
+  let row = []
+  let inQuotes = false
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    const nextChar = text[index + 1]
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        current += '"'
+        index += 1
+      } else {
+        inQuotes = !inQuotes
+      }
+      continue
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(current)
+      current = ''
+      continue
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') index += 1
+      row.push(current)
+      rows.push(row)
+      row = []
+      current = ''
+      continue
+    }
+
+    current += char
+  }
+
+  row.push(current)
+  rows.push(row)
+
+  return rows
+    .map((items) => items.map((item) => item.trim()))
+    .filter((items) => items.some(Boolean))
+}
+
+const findHeaderIndex = (headers, aliases) => {
+  const normalizedHeaders = headers.map((header) => header.trim())
+  return normalizedHeaders.findIndex((header) => aliases.includes(header))
+}
+
+const hasKnownCsvHeader = (headers) =>
+  Object.values(HEADER_ALIASES).some((aliases) => findHeaderIndex(headers, aliases) >= 0)
+
+const countReplacementChars = (text) => (text.match(/\uFFFD/g) || []).length
+
+const decodeCsvBuffer = (buffer) => {
+  const decoders = [
+    { label: 'utf-8', decoder: new TextDecoder('utf-8') },
+    { label: 'gb18030', decoder: new TextDecoder('gb18030') },
+    { label: 'gbk', decoder: new TextDecoder('gbk') },
+  ]
+  const decoded = decoders.map(({ label, decoder }) => {
+    const text = decoder.decode(buffer).replace(/^\uFEFF/, '')
+    return { label, text, badChars: countReplacementChars(text) }
+  })
+  decoded.sort((a, b) => a.badChars - b.badChars)
+  return decoded[0].text
+}
+
+const normalizeImportedRows = (csvRows) => {
+  if (!csvRows.length) return { rows: [], skipped: 0 }
+
+  const [firstRow, ...restRows] = csvRows
+  const hasHeader = hasKnownCsvHeader(firstRow)
+  const dataRows = hasHeader ? restRows : csvRows
+  const indexes = hasHeader
+    ? {
+        originalPrompt: findHeaderIndex(firstRow, HEADER_ALIASES.originalPrompt),
+        description: findHeaderIndex(firstRow, HEADER_ALIASES.description),
+        keywords: findHeaderIndex(firstRow, HEADER_ALIASES.keywords),
+        count: findHeaderIndex(firstRow, HEADER_ALIASES.count),
+      }
+    : {
+        originalPrompt: 0,
+        description: 1,
+        keywords: 2,
+        count: 3,
+      }
+
+  const importedRows = []
+  let skipped = 0
+
+  dataRows.forEach((items) => {
+    const originalPrompt = (items[indexes.originalPrompt] || '').trim()
+    if (!originalPrompt) {
+      skipped += 1
+      return
+    }
+
+    const description = indexes.description >= 0 ? (items[indexes.description] || '').trim() : ''
+    const keywordText = indexes.keywords >= 0 ? (items[indexes.keywords] || '').trim() : ''
+    const parsedCount = Number.parseInt(indexes.count >= 0 ? items[indexes.count] : '', 10)
+    const count = Number.isFinite(parsedCount) && parsedCount > 0 ? Math.min(parsedCount, 4) : 1
+    const now = Date.now()
+
+    importedRows.push(createEmptyRow({
+      originalPrompt,
+      description,
+      keywords: normalizeKeywords(keywordText),
+      count,
+      status: STATUS.WAITING,
+      expandedPromptTouched: Boolean(description),
+      dirty: true,
+      lastEditedAt: now,
+    }))
+  })
+
+  return { rows: importedRows, skipped }
 }
 
 /**
@@ -145,6 +278,7 @@ function BatchGenerateTablePage() {
   const [rows, setRows] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [loadingSearch, setLoadingSearch] = useState(false)
+  const [importingCsv, setImportingCsv] = useState(false)
   const [workMode, setWorkMode] = useState('single')
   const [viewMode, setViewMode] = useState('表格视图')
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -154,10 +288,14 @@ function BatchGenerateTablePage() {
 
   // 每行一份防抖函数，保证编辑 A 行不会触发 B 行生成。
   const rowDebounceMapRef = useRef(new Map())
+  const expandDebounceMapRef = useRef(new Map())
+  const expandRequestSeqRef = useRef(new Map())
   const generateQueueRef = useRef([])
   const activeGenerateCountRef = useRef(0)
   const queuedRowIdsRef = useRef(new Set())
+  const generateAbortMapRef = useRef(new Map())
   const rowsRef = useRef(rows)
+  const csvInputRef = useRef(null)
 
   useEffect(() => {
     rowsRef.current = rows
@@ -166,6 +304,8 @@ function BatchGenerateTablePage() {
   useEffect(() => {
     return () => {
       rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
+      expandDebounceMapRef.current.forEach((debouncedExpand) => debouncedExpand.cancel?.())
+      generateAbortMapRef.current.forEach((controller) => controller.abort())
       generateQueueRef.current = []
       queuedRowIdsRef.current.clear()
     }
@@ -214,6 +354,65 @@ function BatchGenerateTablePage() {
     ensureBatchRows()
   }
 
+  const runExpandPrompt = async (rowId, options = {}) => {
+    const row = getRowById(rowId)
+    const prompt = row?.originalPrompt?.trim()
+    if (!row || !prompt) return
+    if (row.expandedPromptTouched && !options.force) return
+
+    const requestSeq = (expandRequestSeqRef.current.get(rowId) || 0) + 1
+    expandRequestSeqRef.current.set(rowId, requestSeq)
+    updateRow(rowId, { expandingPrompt: true, expandError: '' })
+
+    try {
+      const response = await expandPrompt(prompt)
+      const latestRow = getRowById(rowId)
+      const isLatest = expandRequestSeqRef.current.get(rowId) === requestSeq
+      if (!latestRow || !isLatest) return
+      if (latestRow.expandedPromptTouched && !options.force) return
+
+      updateRow(rowId, {
+        description: response.expandedPrompt || '',
+        expandingPrompt: false,
+        expandError: '',
+        expandedPromptTouched: Boolean(options.force) ? false : latestRow.expandedPromptTouched,
+      })
+    } catch (error) {
+      const isLatest = expandRequestSeqRef.current.get(rowId) === requestSeq
+      if (!isLatest) return
+      updateRow(rowId, {
+        expandingPrompt: false,
+        expandError: error?.response?.data?.detail || '扩写失败，可手动填写',
+      })
+    }
+  }
+
+  const getDebouncedExpandPrompt = (rowId) => {
+    if (!expandDebounceMapRef.current.has(rowId)) {
+      expandDebounceMapRef.current.set(
+        rowId,
+        createDebouncedFunction(() => runExpandPrompt(rowId), PROMPT_EXPAND_DEBOUNCE_MS)
+      )
+    }
+    return expandDebounceMapRef.current.get(rowId)
+  }
+
+  const schedulePromptExpand = (rowId) => {
+    const row = getRowById(rowId)
+    const debouncedExpand = getDebouncedExpandPrompt(rowId)
+    if (row?.originalPrompt?.trim() && !row.expandedPromptTouched) {
+      debouncedExpand()
+    } else {
+      debouncedExpand.cancel?.()
+    }
+  }
+
+  const handleRegenerateExpandedPrompt = (rowId) => {
+    expandDebounceMapRef.current.get(rowId)?.cancel?.()
+    updateRow(rowId, { expandedPromptTouched: false })
+    runExpandPrompt(rowId, { force: true })
+  }
+
   /**
    * 单行生成逻辑
    * 数据流：读取表格行 -> 调用现有 generateImages(prompt, keywords, count) -> 归一化 response.images -> 写回该行。
@@ -231,6 +430,9 @@ function BatchGenerateTablePage() {
 
     const debouncedGenerate = rowDebounceMapRef.current.get(rowId)
     debouncedGenerate?.cancel?.()
+    generateAbortMapRef.current.get(rowId)?.abort()
+    const abortController = new AbortController()
+    generateAbortMapRef.current.set(rowId, abortController)
 
     try {
       updateRow(rowId, {
@@ -246,8 +448,16 @@ function BatchGenerateTablePage() {
         tempPreviewUrl: '',
         resultImages: [],
       })
-      const description = row.description.trim() || prompt
-      const response = await generateImageDraft(prompt, keywordsToRequestString(row.keywords), row.count, description)
+      const description = row.description.trim()
+      const promptForGeneration = description || prompt
+      const response = await generateImageDraft(
+        promptForGeneration,
+        keywordsToRequestString(row.keywords),
+        row.count,
+        description || prompt,
+        { signal: abortController.signal }
+      )
+      if (abortController.signal.aborted || !getRowById(rowId)) return
       const resultImages = (response.images || []).map(normalizeImageResponse)
       const firstImage = resultImages[0]
 
@@ -268,11 +478,18 @@ function BatchGenerateTablePage() {
       })
       if (!options.silent) message.success('生成成功')
     } catch (error) {
+      if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || abortController.signal.aborted) {
+        return
+      }
       updateRow(rowId, {
         status: STATUS.FAILED,
         errorMessage: error?.response?.data?.detail || error.message || '生成失败',
       })
       if (!options.silent) message.error('生成失败')
+    } finally {
+      if (generateAbortMapRef.current.get(rowId) === abortController) {
+        generateAbortMapRef.current.delete(rowId)
+      }
     }
   }
 
@@ -326,15 +543,19 @@ function BatchGenerateTablePage() {
   const handlePromptChange = (rowId, value) => {
     updateRow(rowId, (row) => ({
       originalPrompt: value,
-      description: row.description || value,
+      description: row.expandedPromptTouched ? row.description : '',
+      expandingPrompt: false,
+      expandError: '',
       ...(value.trim() ? resetGeneratedState() : { ...resetGeneratedState(), status: STATUS.IDLE }),
     }))
 
     const debouncedGenerate = getDebouncedGenerate(rowId)
     if (value.trim()) {
       debouncedGenerate()
+      window.setTimeout(() => schedulePromptExpand(rowId), 0)
     } else {
       debouncedGenerate.cancel?.()
+      expandDebounceMapRef.current.get(rowId)?.cancel?.()
     }
   }
 
@@ -390,7 +611,9 @@ function BatchGenerateTablePage() {
         nextRows[index] = {
           ...current,
           originalPrompt: prompt,
-          description: current.description || prompt,
+          description: current.expandedPromptTouched ? current.description : '',
+          expandingPrompt: false,
+          expandError: '',
           ...resetGeneratedState(),
           lastEditedAt: editedAt,
         }
@@ -400,8 +623,87 @@ function BatchGenerateTablePage() {
       return nextRows
     })
 
-    window.setTimeout(() => targetIds.forEach((id) => scheduleRowGenerate(id)), 0)
+    window.setTimeout(() => {
+      targetIds.forEach((id) => {
+        schedulePromptExpand(id)
+        scheduleRowGenerate(id)
+      })
+    }, 0)
     message.success(`已拆分 ${pastedRows.length} 行，10 秒后自动生成`)
+  }
+
+  const scheduleImportedRows = (importedRows) => {
+    window.setTimeout(() => {
+      importedRows.forEach((row) => {
+        if (!row.expandedPromptTouched) schedulePromptExpand(row.id)
+        scheduleRowGenerate(row.id)
+      })
+    }, 0)
+  }
+
+  const readCsvFile = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        try {
+          resolve(decodeCsvBuffer(reader.result))
+        } catch (error) {
+          reject(new Error('无法识别编码或读取文件失败'))
+        }
+      }
+      reader.onerror = () => reject(new Error('无法识别编码或读取文件失败'))
+      reader.readAsArrayBuffer(file)
+    })
+
+  const handleImportCsvFile = async (file) => {
+    if (!file) return
+    const fileName = file.name || ''
+    if (!fileName.toLowerCase().endsWith('.csv') && file.type && !file.type.includes('csv')) {
+      message.error('文件格式错误，请选择 .csv 文件')
+      return
+    }
+
+    try {
+      setImportingCsv(true)
+      const csvText = await readCsvFile(file)
+      if (!csvText.trim()) {
+        message.error('CSV 为空')
+        return
+      }
+
+      const parsedRows = parseCsvText(csvText)
+      if (!parsedRows.length) {
+        message.error('CSV 为空')
+        return
+      }
+
+      const { rows: importedRows, skipped } = normalizeImportedRows(parsedRows)
+      if (!importedRows.length) {
+        message.error('没有有效 prompt')
+        return
+      }
+
+      setWorkMode('batch')
+      setViewMode('表格视图')
+      setRows((prevRows) => {
+        const nonEmptyRows = prevRows.filter(
+          (row) => row.originalPrompt.trim() || row.description.trim() || row.resultImages?.length
+        )
+        return [...nonEmptyRows, ...importedRows]
+      })
+      scheduleImportedRows(importedRows)
+      message.success(`已导入 ${importedRows.length} 条记录，跳过 ${skipped} 条无效记录`)
+    } catch (error) {
+      message.error(error?.message || '导入失败，无法解析 CSV')
+    } finally {
+      setImportingCsv(false)
+      if (csvInputRef.current) csvInputRef.current.value = ''
+    }
+  }
+
+  const handleCsvInputChange = (event) => {
+    const file = event.target.files?.[0]
+    handleImportCsvFile(file)
   }
 
   const focusCell = (rowId, columnKey) => {
@@ -436,8 +738,13 @@ function BatchGenerateTablePage() {
   const handleDeleteRow = (rowId) => {
     rowDebounceMapRef.current.get(rowId)?.cancel?.()
     rowDebounceMapRef.current.delete(rowId)
+    expandDebounceMapRef.current.get(rowId)?.cancel?.()
+    expandDebounceMapRef.current.delete(rowId)
+    expandRequestSeqRef.current.delete(rowId)
     queuedRowIdsRef.current.delete(rowId)
     generateQueueRef.current = generateQueueRef.current.filter((job) => job.rowId !== rowId)
+    generateAbortMapRef.current.get(rowId)?.abort()
+    generateAbortMapRef.current.delete(rowId)
     setRows((prevRows) => prevRows.filter((row) => row.id !== rowId))
   }
 
@@ -483,6 +790,9 @@ function BatchGenerateTablePage() {
 
   const handleRefresh = () => {
     rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
+    expandDebounceMapRef.current.forEach((debouncedExpand) => debouncedExpand.cancel?.())
+    generateAbortMapRef.current.forEach((controller) => controller.abort())
+    generateAbortMapRef.current.clear()
     generateQueueRef.current = []
     queuedRowIdsRef.current.clear()
     setRows(workMode === 'batch' ? Array.from({ length: DEFAULT_BATCH_ROWS }, () => createEmptyRow()) : [])
@@ -584,15 +894,34 @@ function BatchGenerateTablePage() {
         dataIndex: 'description',
         width: 300,
         render: (_, row) => (
-          <EditableCell
-            type="textarea"
-            value={row.description}
-            placeholder="本地编辑扩充描述"
-            disabled={row.status === STATUS.GENERATING}
-            onChange={(value) => handleRowFieldChange(row.id, { description: value })}
-            onKeyDown={(event) => handleCellKeyDown(row.id, 'description', event)}
-            dataCellId={`${row.id}-description`}
-          />
+          <div className="expand-cell">
+            <EditableCell
+              type="textarea"
+              value={row.description}
+              placeholder="本地规则扩写，可手动编辑"
+              disabled={row.status === STATUS.GENERATING || row.expandingPrompt}
+              onChange={(value) => handleRowFieldChange(row.id, {
+                description: value,
+                expandedPromptTouched: true,
+                expandingPrompt: false,
+                expandError: '',
+              })}
+              onKeyDown={(event) => handleCellKeyDown(row.id, 'description', event)}
+              dataCellId={`${row.id}-description`}
+            />
+            <div className="expand-meta">
+              <Button
+                size="small"
+                type="link"
+                icon={<SyncOutlined spin={row.expandingPrompt} />}
+                disabled={!row.originalPrompt.trim() || row.status === STATUS.GENERATING}
+                onClick={() => handleRegenerateExpandedPrompt(row.id)}
+              >
+                {row.expandingPrompt ? '扩写中' : '重新扩写'}
+              </Button>
+              {row.expandError && <Text type="danger" className="expand-error">{row.expandError}</Text>}
+            </div>
+          </div>
         ),
       },
       {
@@ -740,7 +1069,20 @@ function BatchGenerateTablePage() {
           />
         </div>
         <div className="toolbar-right">
-          <Button icon={<FilterOutlined />}>筛选</Button>
+          <Button
+            icon={<ImportOutlined />}
+            loading={importingCsv}
+            onClick={() => csvInputRef.current?.click()}
+          >
+            一键导入 CSV
+          </Button>
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="csv-file-input"
+            onChange={handleCsvInputChange}
+          />
           <Button icon={<SortAscendingOutlined />}>排序</Button>
           <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             刷新

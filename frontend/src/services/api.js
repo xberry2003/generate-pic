@@ -58,17 +58,33 @@ export const searchImages = async (query = '', options = {}) => {
   }
 }
 
-export const generateImageDraft = async (prompt, keywords = '', count = 1, description = '') => {
+export const generateImageDraft = async (prompt, keywords = '', count = 1, description = '', options = {}) => {
   try {
     const response = await apiClient.post('/generate/draft', {
       prompt,
       keywords,
       count,
       description,
+    }, {
+      signal: options.signal,
     })
     return response.data
   } catch (error) {
     console.error('生成预览图失败:', error)
+    throw error
+  }
+}
+
+export const expandPrompt = async (prompt, options = {}) => {
+  try {
+    const response = await apiClient.post('/prompts/expand', {
+      prompt,
+      style: options.style || 'realistic',
+      aspect: options.aspect || 'default',
+    })
+    return response.data
+  } catch (error) {
+    console.error('扩写描述失败:', error)
     throw error
   }
 }

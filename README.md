@@ -1,446 +1,425 @@
-# 文生图图片库 Web 小工具
+# 文生图图片工作台
 
-一个完整的前后端分离的文生图图片库应用，支持生成、上传、搜索和下载图片。
+一个前后端分离的图片生成与素材管理工具。当前版本以“批量表格工作台”为核心，支持本地规则扩写、MiniMax 生图、生成草稿预览、手动上传到腾讯云 COS、图片库预览/下载、CSV 一键导入等流程。
 
-## 🎯 功能特性
+## 核心功能
 
-### 核心功能
-- **图片生成**：支持自然语言提示词生成图片，10 秒无输入自动生成，或手动点击按钮立即生成
-- **防抖输入**：使用 debounce 防止过于频繁的生成请求
-- **图片库**：展示所有生成或上传的图片，支持缩略图预览
-- **关键词搜索**：支持按 prompt、keywords、description 进行模糊搜索
-- **图片下载**：支持点击下载图片到本地
-- **图片上传**：支持直接上传本地图片到图片库
-- **状态显示**：实时显示生成过程中的状态（idle、waiting、generating、done、failed）
+### 图片生成工作台
 
-### 技术特性
-- 前后端完全分离
-- 支持 CORS 跨域资源共享
-- SQLite 数据库存储，可扩展至 PostgreSQL
-- RESTful API 设计，易于第三方集成
-- 详细的中文代码注释
+- 支持单条记录和批量表格模式。
+- 每一行代表一条生图任务，可编辑：
+  - 原始描述
+  - 描述扩充
+  - Keywords
+  - 状态
+  - 结果图片
+  - 操作按钮
+- 原始描述输入后：
+  - 5 秒无输入会调用本地规则扩写接口，自动填充“描述扩充”列。
+  - 10 秒无输入会进入生成队列，自动生成草稿图。
+- 生成并发受控，当前最多 2 行同时生成，避免批量任务一次性打满生图 API。
+- 操作栏支持：
+  - 生成
+  - 重试
+  - 查看
+  - 上传
+  - 下载
+  - 删除
 
-## 🛠️ 技术栈
+### 两阶段生成流程
+
+当前工作台严格区分“生成”和“上传”：
+
+1. 生成 / 重试
+   - 只调用 MiniMax 生成临时预览图。
+   - 只显示在当前工作台。
+   - 不上传 COS。
+   - 不写数据库。
+   - 不进入后端图片库。
+
+2. 上传
+   - 只有用户点击“上传”按钮后，才上传当前满意图片到 COS。
+   - COS 上传成功后写入数据库。
+   - 图片库刷新后才能看到该图片。
+
+这可以避免重试时把不满意的图片反复写入图片库。
+
+### 本地规则版描述扩充
+
+由于 MiniMax `prompt_optimizer=true` 只影响内部出图效果，不返回可读取的优化 prompt 文本，项目新增了后端本地规则扩写接口：
+
+```http
+POST /api/prompts/expand
+```
+
+请求示例：
+
+```json
+{
+  "prompt": "污水厂",
+  "style": "realistic",
+  "aspect": "default"
+}
+```
+
+返回示例：
+
+```json
+{
+  "originalPrompt": "污水厂",
+  "expandedPrompt": "一座现代化污水处理厂，巨大的处理池排列整齐，大型设备和建筑结构清晰可见，场景布局整齐，具有真实工业环境氛围，广角构图，白天自然光，真实摄影风格，高细节，高清画质"
+}
+```
+
+规则位置：
+
+- `backend/app/services/prompt_expander.py`
+- `backend/app/routes/prompts.py`
+
+特点：
+
+- 不调用任何外部 LLM。
+- 不需要新的 API Key。
+- 通过关键词分类和模板拼接生成扩写文本。
+- 支持工业建筑、人物、自然风景、城市建筑、物体产品和默认模板。
+- 如果用户手动编辑过“描述扩充”，后续自动扩写不会覆盖。
+- 点击“重新扩写”可以强制重新生成描述扩充。
+
+### CSV 一键导入
+
+顶部“一键导入 CSV”按钮支持把本地 CSV 批量填入表格。
+
+支持表头模式：
+
+| CSV 字段名 | 映射到 |
+| --- | --- |
+| `prompt` / `原始描述` / `originalPrompt` | 原始描述 |
+| `expandedPrompt` / `描述扩充` / `description` | 描述扩充 |
+| `keywords` / `关键词` | Keywords |
+| `count` / `数量` | 数量 |
+
+也支持无表头模式：
+
+| 列序号 | 映射到 |
+| --- | --- |
+| 第 1 列 | 原始描述 |
+| 第 2 列 | 描述扩充 |
+| 第 3 列 | Keywords |
+| 第 4 列 | 数量 |
+
+CSV 示例：
+
+```csv
+prompt,expandedPrompt,keywords,count
+污水厂,一座现代化污水处理厂，巨大的处理池排列整齐,工业,1
+自来水厂,一座现代化自来水厂，高耸的储水塔矗立在厂区中央,城市,1
+```
+
+导入行为：
+
+- 空行会跳过。
+- 原始描述为空的行会跳过。
+- 没有描述扩充的行会继续走本地规则自动扩写。
+- 有描述扩充的行会标记为用户已有内容，不会被自动覆盖。
+- 导入后不会上传 COS，也不会写数据库。
+- 导入后的行复用现有 10 秒自动生成逻辑和生成队列。
+
+编码兼容：
+
+- UTF-8
+- UTF-8 with BOM
+- GB18030
+- GBK
+
+### 图片库
+
+图片库读取腾讯云 COS 中的真实对象列表，不再依赖 SFTP 或服务器本地目录。
+
+当前 COS prefix：
+
+```text
+ppt-素材/图片素材/
+```
+
+图片库打开或刷新时，会从 COS prefix 拉取对象列表，并返回给前端展示。
+
+预览和下载已分离：
+
+- `previewUrl`：用于 `<img src>` 预览，返回 `Content-Disposition: inline`。
+- `downloadUrl`：用于下载按钮，返回 `Content-Disposition: attachment`。
+
+这可以避免把下载接口当作图片预览地址导致 broken image。
+
+### 上传图片
+
+首页上传图片会：
+
+1. 上传到 COS。
+2. 写入数据库。
+3. 只把本次上传结果 append 到当前工作台。
+4. 不拉取图片库历史数据到首页。
+
+上传命名规则：
+
+- 优先使用“原始描述”生成中文安全文件名。
+- 没有原始描述/描述扩展时会拒绝上传。
+- 去掉非法路径字符。
+- 同名冲突时自动追加短时间戳。
+
+最终 COS Key 形如：
+
+```text
+ppt-素材/图片素材/一颗西瓜.png
+ppt-素材/图片素材/一颗西瓜_113302.png
+```
+
+### 删除生成中任务
+
+删除某一行时会：
+
+- 取消该行的自动生成 debounce。
+- 从生成队列移除。
+- 如果前端正在请求 `/api/generate/draft`，会通过 `AbortController` 取消该前端 HTTP 请求。
+- 被取消的结果不会再回写到表格。
+
+注意：如果后端已经把请求发给 MiniMax，MiniMax 服务端是否真正停止取决于 MiniMax 是否支持任务取消；当前 MiniMax 生图接口没有单独的取消任务接口。
+
+## 技术栈
 
 ### 前端
-- **React** 18.2.0
-- **Vite** 5.0.0（快速开发服务器和构建工具）
-- **Ant Design** 5.10.0（企业级 UI 库）
-- **Axios** 1.6.0（HTTP 客户端）
-- **Lodash** 4.17.21（函数库，用于 debounce）
+
+- React 18
+- Vite 5
+- Ant Design 5
+- Axios
+- Lodash debounce
 
 ### 后端
-- **FastAPI** 0.104.1（现代 Python Web 框架）
-- **Uvicorn** 0.24.0（ASGI 服务器）
-- **SQLAlchemy** 2.0.23（ORM 框架）
-- **Pydantic** 2.5.0（数据验证）
-- **Python-Multipart** 0.0.6（文件上传支持）
-- **Pillow** 10.1.0（图片处理）
 
-### 数据库
-- **SQLite**（默认，适合开发和小规模应用）
-- 可扩展至 PostgreSQL、MySQL 等
+- FastAPI
+- Uvicorn
+- SQLAlchemy
+- Pydantic
+- Pillow
+- Tencent COS SDK
+- MiniMax image generation API
 
-## 📁 项目结构
+### 数据与存储
 
-```
+- SQLite：默认本地数据库
+- 腾讯云 COS：正式图片素材存储
+- COS prefix：`ppt-素材/图片素材/`
+
+## 项目结构
+
+```text
 generate-pic/
-├── frontend/                      # 前端项目（React + Vite）
-│   ├── src/
-│   │   ├── components/            # React 组件（预留扩展）
-│   │   ├── pages/
-│   │   │   ├── GeneratePage.jsx   # 生成页面
-│   │   │   ├── GeneratePage.css
-│   │   │   ├── GalleryPage.jsx    # 图片库页面
-│   │   │   └── GalleryPage.css
-│   │   ├── services/
-│   │   │   ├── api.js            # API 调用服务
-│   │   │   └── debounce.js       # 防抖工具
-│   │   ├── App.jsx               # 主应用
-│   │   ├── App.css
-│   │   ├── main.jsx              # 入口文件
-│   │   └── index.css             # 全局样式
-│   ├── package.json
-│   ├── vite.config.js
-│   └── index.html
-│
-├── backend/                       # 后端项目（FastAPI）
-│   ├── app/
-│   │   ├── main.py              # FastAPI 主应用
-│   │   ├── database.py          # 数据库配置
-│   │   ├── models.py            # SQLAlchemy 模型
-│   │   ├── routes/
-│   │   │   ├── generate.py      # 生图接口
-│   │   │   ├── images.py        # 图片搜索、下载接口
-│   │   │   └── upload.py        # 图片上传接口
-│   │   └── services/
-│   │       └── image_generation_service.py  # 图片生成服务
-│   ├── uploads/
-│   │   └── images/              # 图片存储目录
-│   ├── requirements.txt          # Python 依赖
-│   └── generate_pic.db          # SQLite 数据库（自动生成）
-│
-└── README.md                      # 项目文档
+├─ backend/
+│  ├─ app/
+│  │  ├─ main.py
+│  │  ├─ database.py
+│  │  ├─ models.py
+│  │  ├─ routes/
+│  │  │  ├─ generate.py
+│  │  │  ├─ images.py
+│  │  │  ├─ prompts.py
+│  │  │  ├─ storage.py
+│  │  │  └─ upload.py
+│  │  └─ services/
+│  │     ├─ image_generation_service.py
+│  │     ├─ image_record_service.py
+│  │     ├─ minimax_client.py
+│  │     ├─ prompt_expander.py
+│  │     └─ remote_storage_service.py
+│  ├─ requirements.txt
+│  └─ generate_pic.db
+├─ frontend/
+│  ├─ src/
+│  │  ├─ components/
+│  │  ├─ pages/
+│  │  │  ├─ BatchGenerateTablePage.jsx
+│  │  │  ├─ GalleryPage.jsx
+│  │  │  └─ GeneratePage.jsx
+│  │  └─ services/
+│  │     ├─ api.js
+│  │     └─ debounce.js
+│  └─ package.json
+└─ README.md
 ```
 
-## 🚀 快速开始
+## 快速启动
 
-### 前置要求
-- Node.js 16+ (用于前端)
-- Python 3.8+ (用于后端)
-- npm 或 yarn (前端包管理)
-- pip (Python 包管理)
-
-### 1️⃣ 后端启动
+### 后端
 
 ```bash
-# 进入后端目录
 cd backend
-
-# 创建虚拟环境（可选但推荐）
 python -m venv venv
 
-# 激活虚拟环境
-# Windows:
+# Windows
 venv\Scripts\activate
-# macOS/Linux:
+
+# macOS/Linux
 source venv/bin/activate
 
-# 安装依赖
 pip install -r requirements.txt
-
-# 启动服务
-python -m app.main
-
-# 或使用 uvicorn 直接启动
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-服务启动成功后，你会看到：
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000
+后端文档地址：
+
+```text
+http://localhost:8000/docs
 ```
 
-你可以访问 http://localhost:8000/docs 查看 API 文档。
-
-### 2️⃣ 前端启动
+### 前端
 
 ```bash
-# 进入前端目录
 cd frontend
-
-# 安装依赖
 npm install
-# 或使用 yarn
-yarn install
-
-# 启动开发服务器
 npm run dev
-# 或使用 yarn
-yarn dev
 ```
 
-服务启动成功后，你会看到：
-```
-  VITE v5.0.0  ready in XXX ms
+前端地址：
 
-  ➜  Local:   http://localhost:5173/
-```
-
-在浏览器中打开 http://localhost:5173/ 即可使用应用。
-
-## 📡 API 接口文档
-
-### 生图接口
-
-#### POST /api/generate
-
-生成图片接口。
-
-**请求示例：**
-```bash
-curl -X POST http://localhost:8000/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "一只可爱的小猫坐在窗边，阳光洒落，温暖的色调",
-    "keywords": "可爱,温暖,日光,插画风格",
-    "count": 1
-  }'
+```text
+http://localhost:5173/
 ```
 
-**请求参数：**
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| prompt | string | ✅ | 生图提示词，描述要生成的图片内容 |
-| keywords | string | ❌ | 关键词，用逗号分隔，默认空 |
-| count | integer | ❌ | 生成数量，1-4，默认 1 |
+## 环境变量
 
-**响应示例（200 OK）：**
+后端配置文件：
+
+```text
+backend/.env
+```
+
+示例文件：
+
+```text
+backend/.env.example
+```
+
+关键配置：
+
+```env
+MINIMAX_API_BASE_URL=https://api.minimax.chat
+MINIMAX_API_KEY=your_minimax_key
+MINIMAX_MODEL=image-01
+MINIMAX_IMAGE_ENDPOINT=/v1/image_generation
+MINIMAX_RESPONSE_FORMAT=base64
+MINIMAX_ASPECT_RATIO=1:1
+MINIMAX_PROMPT_OPTIMIZER=true
+MINIMAX_TIMEOUT_SECONDS=180
+
+STORAGE_PROVIDER=cos
+COS_SECRET_ID=your_secret_id
+COS_SECRET_KEY=your_secret_key
+COS_REGION=ap-shanghai
+COS_BUCKET=teachvideo-1311931714
+COS_KEY_PREFIX=ppt-素材/图片素材
+```
+
+注意：
+
+- 不要把真实 SecretId、SecretKey、MiniMax Key 写入代码。
+- `.env` 只在后端读取，不返回给前端。
+- `MINIMAX_PROMPT_OPTIMIZER=true` 只影响 MiniMax 内部出图效果，不会返回优化后的 prompt 文本。
+
+## API 摘要
+
+### POST `/api/prompts/expand`
+
+本地规则扩写，不调用外部 API。
+
 ```json
 {
-  "message": "图片生成成功",
-  "images": [
-    {
-      "id": 1,
-      "prompt": "一只可爱的小猫坐在窗边，阳光洒落，温暖的色调",
-      "keywords": "可爱,温暖,日光,插画风格",
-      "preview_url": "/uploads/images/20240101_120000_abc12345.png",
-      "created_at": "2024-01-01T12:00:00"
-    }
-  ]
+  "prompt": "污水厂",
+  "style": "realistic",
+  "aspect": "default"
 }
 ```
 
-### 搜索接口
+### POST `/api/generate/draft`
 
-#### GET /api/images/search
+生成临时草稿图，不上传 COS，不写数据库。
 
-搜索图片库。
-
-**请求示例：**
-```bash
-curl "http://localhost:8000/api/images/search?query=猫&skip=0&limit=10"
-```
-
-**查询参数：**
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| query | string | ❌ | 搜索关键词，可搜索 prompt、keywords、description，默认空 |
-| skip | integer | ❌ | 分页偏移，默认 0 |
-| limit | integer | ❌ | 分页限制，默认 50，最多 100 |
-
-**响应示例（200 OK）：**
 ```json
 {
-  "message": "搜索成功",
-  "total": 1,
-  "images": [
-    {
-      "id": 1,
-      "prompt": "一只可爱的小猫",
-      "keywords": "可爱,宠物,温暖",
-      "description": null,
-      "preview_url": "/uploads/images/20240101_120000_abc12345.png",
-      "download_url": "/api/images/1/download",
-      "created_at": "2024-01-01T12:00:00"
-    }
-  ]
+  "prompt": "一座现代化污水处理厂...",
+  "keywords": "工业",
+  "count": 1,
+  "description": "一座现代化污水处理厂..."
 }
 ```
 
-### 下载接口
+### POST `/api/generate/upload`
 
-#### GET /api/images/{image_id}/download
+上传已满意的草稿图到 COS，并写数据库。
 
-下载图片。
+### GET `/api/images`
 
-**请求示例：**
-```bash
-curl http://localhost:8000/api/images/1/download -O
-```
+从 COS prefix 拉取图片库列表。
 
-**路径参数：**
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| image_id | integer | ✅ | 图片 ID |
+### GET `/api/images/preview?key=<encoded cosKey>`
 
-**响应：**
-- 200 OK：返回图片文件
-- 404 Not Found：图片不存在
+图片预览接口，返回 inline 图片二进制。
 
-### 上传接口
+### GET `/api/images/download?key=<encoded cosKey>`
 
-#### POST /api/images/upload
+图片下载接口，返回 attachment。
 
-上传图片。
+### POST `/api/images/upload`
 
-**请求示例：**
-```bash
-curl -X POST http://localhost:8000/api/images/upload \
-  -F "file=@/path/to/image.png" \
-  -F "prompt=我的图片描述" \
-  -F "keywords=标签,关键词" \
-  -F "description=详细描述"
-```
+上传本地图片到 COS，并写数据库。
 
-**请求参数（multipart/form-data）：**
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| file | file | ✅ | 图片文件，支持 PNG、JPG、GIF、WebP |
-| prompt | string | ❌ | 图片描述 |
-| keywords | string | ❌ | 关键词，用逗号分隔 |
-| description | string | ❌ | 详细描述 |
+## 使用流程
 
-**响应示例（200 OK）：**
-```json
-{
-  "id": 2,
-  "preview_url": "/uploads/images/uploaded_image.png",
-  "download_url": "/api/images/2/download",
-  "message": "上传成功"
-}
-```
+### 批量 CSV 生成
 
-## ⚙️ 配置说明
+1. 点击“批量生成”进入表格模式。
+2. 点击“一键导入 CSV”选择本地 CSV。
+3. 检查原始描述、描述扩充、Keywords。
+4. 等待 10 秒自动生成，或点击“生成全部待处理”。
+5. 对不满意的行点击“重试”。
+6. 满意后点击该行“上传”。
+7. 到图片库刷新查看已上传图片。
 
-### 后端配置
+### 手动输入生成
 
-编辑 `backend/app/database.py` 可以配置数据库：
+1. 点击“新增记录”或进入批量表格模式。
+2. 输入“原始描述”。
+3. 等待本地规则自动填充“描述扩充”。
+4. 等待自动生成，或手动点击“生成”。
+5. 满意后点击“上传”。
 
-```python
-# SQLite（默认）
-DATABASE_URL = "sqlite:///./generate_pic.db"
+## 安全与边界
 
-# PostgreSQL
-DATABASE_URL = "postgresql://user:password@localhost/generate_pic"
+- 生成草稿不会进入图片库。
+- 重试不会上传 COS。
+- CSV 导入不会上传 COS，也不会写数据库。
+- 只有点击“上传”才会写 COS 和数据库。
+- 图片库只展示 COS 中真实存在的图片对象。
+- 首页工作台刷新后不恢复历史图片库数据。
+- 不使用 mock/demo/localStorage 恢复历史生成记录。
 
-# MySQL
-DATABASE_URL = "mysql+pymysql://user:password@localhost/generate_pic"
-```
+## 常见问题
 
-### 集成真实生图 API
+### CSV 导入中文乱码
 
-编辑 `backend/app/services/image_generation_service.py` 中的 `call_image_generation_api` 函数：
+当前前端会自动尝试 UTF-8、UTF-8 with BOM、GB18030、GBK。若仍乱码，建议从 Excel 另存为 UTF-8 CSV。
 
-```python
-async def call_image_generation_api(prompt: str, keywords: str = "", count: int = 1):
-    """
-    调用真实的生图 API
-    """
-    import aiohttp
-    import base64
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://your-api-endpoint.com/generate",
-            json={
-                "prompt": prompt,
-                "keywords": keywords,
-                "count": count
-            },
-            headers={"Authorization": "Bearer YOUR_API_KEY"}
-        ) as resp:
-            result = await resp.json()
-            # 假设 API 返回 base64 编码的图片
-            images = [
-                base64.b64decode(img['data']) 
-                for img in result['images']
-            ]
-            return images
-```
+### MiniMax 是否会返回优化后的 prompt？
 
-## 🔌 API 可扩展性设计
+不会。真实响应中没有 `optimized_prompt`、`revised_prompt`、`expanded_prompt` 等可读取字段。`prompt_optimizer=true` 只用于 MiniMax 内部优化出图效果。
 
-搜索接口 `GET /api/images/search` 设计成通用 API，可供其他应用调用：
+### 删除生成中的行会取消请求吗？
 
-```javascript
-// 示例：从其他应用调用
-fetch('http://localhost:8000/api/images/search?query=风景')
-  .then(res => res.json())
-  .then(data => {
-    console.log(`找到 ${data.total} 张图片`);
-    data.images.forEach(img => {
-      console.log(`${img.prompt} - ${img.download_url}`);
-    });
-  });
-```
+前端会取消该行 `/api/generate/draft` 请求，并阻止结果回写。若后端已经请求 MiniMax，MiniMax 侧是否停止取决于第三方接口是否支持取消。
 
-## 📝 使用示例
+## 开发提示
 
-### 场景 1：生成图片并下载
-
-1. 打开前端应用 http://localhost:5173/
-2. 在"生成图片"页面的提示词框中输入描述
-3. 等待 10 秒自动生成，或点击"立即生成"按钮
-4. 生成完成后点击"下载"按钮下载图片
-
-### 场景 2：搜索和浏览图片库
-
-1. 切换到"图片库"页面
-2. 在搜索框中输入关键词（如"猫"）
-3. 点击"搜索"或按 Enter 查询
-4. 点击图片卡片可预览大图
-5. 点击"下载"按钮下载图片
-
-### 场景 3：上传本地图片
-
-虽然前端暂未实现上传界面，但可以通过 API 上传：
-
-```bash
-curl -X POST http://localhost:8000/api/images/upload \
-  -F "file=@my_image.png" \
-  -F "prompt=我的图片" \
-  -F "keywords=风景,日落"
-```
-
-## 🔐 安全注意事项
-
-1. **CORS 配置**：当前允许本地开发，生产环境应改为具体域名
-2. **文件上传**：限制文件大小（50MB）和类型（PNG/JPG/GIF/WebP）
-3. **数据库**：生产环境建议使用 PostgreSQL，并配置数据库密码
-4. **API 密钥**：集成真实生图 API 时，使用环境变量存储密钥
-
-## 📚 开发指南
-
-### 添加新的 API 接口
-
-1. 在 `backend/app/routes/` 下创建新路由文件
-2. 使用 Pydantic 定义请求/响应模型
-3. 在 `backend/app/main.py` 中注册路由
-
-示例：
-```python
-# routes/new_feature.py
-from fastapi import APIRouter
-router = APIRouter()
-
-@router.get("/new-endpoint")
-async def new_endpoint():
-    return {"message": "success"}
-
-# main.py
-app.include_router(new_feature.router, prefix="/api")
-```
-
-### 扩展前端功能
-
-1. 创建新页面文件到 `frontend/src/pages/`
-2. 在 `frontend/src/App.jsx` 中添加菜单项和路由
-3. 使用 Ant Design 组件保持 UI 一致性
-
-## 🐛 故障排查
-
-### 后端错误：`ModuleNotFoundError: No module named 'fastapi'`
-**解决方案**：确保已激活虚拟环境并运行 `pip install -r requirements.txt`
-
-### 前端错误：`Cannot find module 'axios'`
-**解决方案**：运行 `npm install` 安装前端依赖
-
-### 跨域请求失败
-**解决方案**：确保后端正确配置了 CORS，访问 http://localhost:8000/docs 验证
-
-### 图片下载失败
-**解决方案**：检查 `backend/uploads/images/` 目录是否存在且有读权限
-
-## 🎓 学习资源
-
-- [FastAPI 官方文档](https://fastapi.tiangolo.com/)
-- [React 官方文档](https://react.dev/)
-- [Ant Design 组件库](https://ant.design/)
-- [SQLAlchemy ORM 教程](https://docs.sqlalchemy.org/)
-
-## 📄 许可证
-
-MIT License
-
-## 🤝 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📞 联系方式
-
-有任何问题或建议，请提交 Issue。
-
----
-
-**祝你使用愉快！** 🎉
+- 后端新增接口放在 `backend/app/routes/`。
+- 后端通用逻辑放在 `backend/app/services/`。
+- 前端 API 封装放在 `frontend/src/services/api.js`。
+- 批量表格主逻辑在 `frontend/src/pages/BatchGenerateTablePage.jsx`。
+- 图片库逻辑在 `frontend/src/pages/GalleryPage.jsx`。

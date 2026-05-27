@@ -35,6 +35,10 @@
   width: min(420px, 32vw);
 }
 
+.csv-file-input {
+  display: none;
+}
+
 .workbench-card {
   border-radius: 0 0 8px 8px;
   border-color: #e6e9ef;
@@ -113,6 +117,29 @@
 .row-error {
   display: block;
   max-width: 160px;
+  font-size: 12px;
+}
+
+.expand-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.expand-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.expand-meta .ant-btn {
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.expand-error {
   font-size: 12px;
 }
 

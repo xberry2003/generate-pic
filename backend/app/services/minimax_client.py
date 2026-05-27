@@ -51,7 +51,7 @@ def get_minimax_config() -> MiniMaxConfig:
         timeout_seconds=int(os.getenv("MINIMAX_TIMEOUT_SECONDS", "180")),
         response_format=os.getenv("MINIMAX_RESPONSE_FORMAT", "base64").strip() or "base64",
         aspect_ratio=os.getenv("MINIMAX_ASPECT_RATIO", "1:1").strip() or "1:1",
-        prompt_optimizer=os.getenv("MINIMAX_PROMPT_OPTIMIZER", "false").strip().lower() == "true",
+        prompt_optimizer=os.getenv("MINIMAX_PROMPT_OPTIMIZER", "true").strip().lower() == "true",
         save_dir=os.getenv("MINIMAX_SAVE_DIR", "uploads/images").strip(),
     )
 
