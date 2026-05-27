@@ -1,5 +1,6 @@
 from datetime import datetime
 from dataclasses import dataclass
+import base64
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -39,6 +40,20 @@ class GenerateResponse(BaseModel):
     message: str
     images: list[dict]
     success: bool = True
+
+
+class DraftGenerateResponse(BaseModel):
+    message: str
+    images: list[dict]
+    success: bool = True
+
+
+class UploadDraftRequest(BaseModel):
+    prompt: str
+    keywords: str | list[str] = ""
+    description: str = ""
+    image_base64: str
+    file_name: str = ""
 
 
 @router.get("/generate/provider-health")
@@ -117,3 +132,74 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
     except Exception as exc:
         print(f"Request error: {exc}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {exc}")
+
+
+@router.post("/generate/draft", response_model=DraftGenerateResponse)
+async def generate_image_draft(request: GenerateRequest):
+    try:
+        if not request.prompt or not request.prompt.strip():
+            raise HTTPException(status_code=400, detail="Prompt is required")
+        if request.count < 1 or request.count > 4:
+            raise HTTPException(status_code=400, detail="Count must be between 1 and 4")
+
+        keyword_text = ",".join(request.keywords) if isinstance(request.keywords, list) else request.keywords
+        image_data_list = await call_image_generation_api(
+            prompt=request.prompt,
+            keywords=keyword_text,
+            count=request.count,
+        )
+        images = []
+        for index, image_data in enumerate(image_data_list):
+            png_bytes = normalize_image_to_png_bytes(image_data)
+            b64 = base64.b64encode(png_bytes).decode("ascii")
+            images.append(
+                {
+                    "id": f"draft-{index + 1}",
+                    "title": request.description or request.prompt,
+                    "prompt": request.prompt,
+                    "description": request.description or request.prompt,
+                    "keywords": keyword_text,
+                    "mimeType": "image/png",
+                    "fileName": generate_image_filename(description=request.description or request.prompt, prompt=request.prompt),
+                    "imageBase64": b64,
+                    "previewUrl": f"data:image/png;base64,{b64}",
+                    "uploaded": False,
+                    "temporary": True,
+                }
+            )
+        return DraftGenerateResponse(message="Draft generation succeeded", images=images)
+    except HTTPException:
+        raise
+    except MiniMaxClientError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Draft generation failed: {exc}")
+
+
+@router.post("/generate/upload", response_model=GenerateResponse)
+async def upload_generated_draft(request: UploadDraftRequest, db: Session = Depends(get_db)):
+    try:
+        if request.image_base64.startswith("data:image/"):
+            image_base64 = request.image_base64.split(",", 1)[1]
+        else:
+            image_base64 = request.image_base64
+        image_bytes = base64.b64decode(image_base64)
+        png_bytes = normalize_image_to_png_bytes(image_bytes)
+        keyword_text = ",".join(request.keywords) if isinstance(request.keywords, list) else request.keywords
+        image_description = (request.description or request.prompt).strip()
+        file_name = request.file_name or generate_image_filename(description=image_description, prompt=request.prompt)
+        remote_info = SFTPStorageClient().upload_bytes(png_bytes, file_name)
+        db_image = create_image_record(
+            db,
+            prompt=request.prompt,
+            description=image_description,
+            keywords=keyword_text,
+            remote_info=remote_info,
+            source="generated",
+            status="done",
+        )
+        return GenerateResponse(message="Upload succeeded", images=[image_to_dict(db_image)])
+    except RemoteStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Upload draft failed: {exc}")

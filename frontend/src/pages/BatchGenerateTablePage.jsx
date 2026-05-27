@@ -26,7 +26,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { API_ORIGIN, generateImages, getImageDownloadUrl, searchImages } from '../services/api'
+import { API_ORIGIN, generateImageDraft, getImageDownloadUrl, searchImages, uploadGeneratedImage } from '../services/api'
 import EditableCell from '../components/EditableCell'
 import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import StatusTag from '../components/StatusTag'
@@ -39,6 +39,9 @@ const STATUS = {
   IDLE: 'idle',
   WAITING: 'waiting',
   GENERATING: 'generating',
+  GENERATED: 'generated',
+  UPLOADING: 'uploading',
+  UPLOADED: 'uploaded',
   DONE: 'done',
   FAILED: 'failed',
 }
@@ -55,6 +58,14 @@ const createEmptyRow = () => ({
   count: 1,
   status: STATUS.IDLE,
   resultImages: [],
+  uploaded: false,
+  uploading: false,
+  cosKey: '',
+  dbId: null,
+  previewUrl: '',
+  downloadUrl: '',
+  tempImageBase64: '',
+  tempPreviewUrl: '',
   errorMessage: '',
   createdAt: '',
 })
@@ -77,15 +88,22 @@ const normalizeKeywords = (keywords) => {
  */
 const normalizeImageResponse = (image) => {
   const previewPath = image.previewUrl || image.preview_url || image.file_path || image.url || ''
-  const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
-  const rawDownloadUrl = image.downloadUrl || image.download_url || getImageDownloadUrl(image.id)
-  const downloadUrl = rawDownloadUrl.startsWith('http') ? rawDownloadUrl : `${API_ORIGIN}${rawDownloadUrl}`
+  const isInlinePreview = previewPath.startsWith('data:') || previewPath.startsWith('blob:')
+  const previewUrl = previewPath.startsWith('http') || isInlinePreview ? previewPath : `${API_ORIGIN}${previewPath}`
+  const isTemporary = Boolean(image.temporary || isInlinePreview)
+  const rawDownloadUrl = image.downloadUrl || image.download_url || (isTemporary ? '' : getImageDownloadUrl(image.id))
+  const downloadUrl = rawDownloadUrl && !rawDownloadUrl.startsWith('http') ? `${API_ORIGIN}${rawDownloadUrl}` : rawDownloadUrl
 
   return {
     id: image.id,
     url: previewUrl,
     previewUrl,
     downloadUrl,
+    imageBase64: image.imageBase64 || image.image_base64 || '',
+    uploaded: Boolean(image.uploaded || image.cosKey || image.remote_path),
+    cosKey: image.cosKey || image.remote_path || '',
+    dbId: image.dbId || image.id || null,
+    fileName: image.fileName || image.file_name || '',
     createdAt: image.created_at || image.createdAt || '',
     raw: image,
   }
@@ -102,6 +120,11 @@ const mapImageToRow = (image) => ({
   keywords: normalizeKeywords(image.keywords),
   count: 1,
   status: STATUS.DONE,
+  uploaded: true,
+  cosKey: image.cosKey || image.remote_path || '',
+  dbId: image.id,
+  previewUrl: image.previewUrl || image.preview_url || '',
+  downloadUrl: image.downloadUrl || image.download_url || '',
   resultImages: [normalizeImageResponse(image)],
   errorMessage: '',
   createdAt: image.created_at || '',
@@ -172,14 +195,35 @@ function BatchGenerateTablePage() {
     debouncedGenerate?.cancel?.()
 
     try {
-      updateRow(rowId, { status: STATUS.GENERATING, errorMessage: '' })
+      updateRow(rowId, {
+        status: STATUS.GENERATING,
+        errorMessage: '',
+        uploaded: false,
+        uploading: false,
+        cosKey: '',
+        dbId: null,
+        previewUrl: '',
+        downloadUrl: '',
+        tempImageBase64: '',
+        tempPreviewUrl: '',
+        resultImages: [],
+      })
       const description = row.description.trim() || prompt
-      const response = await generateImages(prompt, keywordsToRequestString(row.keywords), row.count, description)
+      const response = await generateImageDraft(prompt, keywordsToRequestString(row.keywords), row.count, description)
       const resultImages = (response.images || []).map(normalizeImageResponse)
+      const firstImage = resultImages[0]
 
       updateRow(rowId, {
-        status: STATUS.DONE,
+        status: STATUS.GENERATED,
         resultImages,
+        uploaded: false,
+        uploading: false,
+        cosKey: '',
+        dbId: null,
+        previewUrl: firstImage?.previewUrl || '',
+        downloadUrl: '',
+        tempPreviewUrl: firstImage?.previewUrl || '',
+        tempImageBase64: firstImage?.imageBase64 || '',
         createdAt: resultImages[0]?.createdAt || new Date().toISOString(),
         errorMessage: '',
       })
@@ -276,15 +320,69 @@ function BatchGenerateTablePage() {
     setSearchQuery('')
   }
 
+  const handleUploadedImage = (image) => {
+    if (!image) return
+    const nextRow = mapImageToRow(image)
+    setRows((prevRows) => [nextRow, ...prevRows])
+    setSelectedRowKeys([])
+    message.success('已添加本次上传图片')
+  }
+
   /**
    * 下载逻辑
    * 使用 normalizeImageResponse 里的 downloadUrl，本质仍来自 getImageDownloadUrl(imageId)，继续请求后端下载接口。
    */
-  const handleDownloadImage = (image) => {
-    if (!image?.downloadUrl) return
+  const handleUploadGeneratedImage = async (rowId) => {
+    const row = getRowById(rowId)
+    const image = row?.resultImages?.[0]
+    if (!row || !image) return
+    if (row.uploaded || row.cosKey) {
+      message.info('该图片已上传，请勿重复上传')
+      return
+    }
+    if (!image.imageBase64) {
+      message.warning('当前图片缺少临时数据，无法上传')
+      return
+    }
+
+    try {
+      updateRow(rowId, { status: STATUS.UPLOADING, uploading: true, errorMessage: '' })
+      const response = await uploadGeneratedImage({
+        prompt: row.originalPrompt,
+        keywords: keywordsToRequestString(row.keywords),
+        description: row.description || row.originalPrompt,
+        imageBase64: image.imageBase64,
+        fileName: image.fileName,
+      })
+      const uploadedImage = normalizeImageResponse(response.images?.[0] || response.image)
+      updateRow(rowId, {
+        status: STATUS.UPLOADED,
+        uploading: false,
+        uploaded: true,
+        cosKey: uploadedImage.cosKey,
+        dbId: uploadedImage.dbId,
+        previewUrl: uploadedImage.previewUrl,
+        downloadUrl: uploadedImage.downloadUrl,
+        resultImages: [uploadedImage],
+        errorMessage: '',
+      })
+      message.success('上传成功')
+    } catch (error) {
+      updateRow(rowId, {
+        status: STATUS.GENERATED,
+        uploading: false,
+        errorMessage: error?.response?.data?.detail || error.message || '上传失败',
+      })
+      message.error('上传失败')
+    }
+  }
+
+  const handleDownloadImage = (image, row = null) => {
+    const href = image?.downloadUrl || image?.previewUrl || row?.tempPreviewUrl
+    if (!href) return
     const link = document.createElement('a')
-    link.href = image.downloadUrl
-    link.download = `image-${image.id}.png`
+    link.href = href
+    link.download = image?.fileName || `${row?.description || row?.originalPrompt || 'image'}.png`
     link.click()
   }
 
@@ -393,25 +491,10 @@ function BatchGenerateTablePage() {
           ),
       },
       {
-        title: '下载',
-        dataIndex: 'downloadUrl',
-        width: 92,
-        render: (_, row) => (
-          <Button
-            size="small"
-            icon={<DownloadOutlined />}
-            disabled={!row.resultImages?.length}
-            onClick={() => handleDownloadImage(row.resultImages[0])}
-          >
-            下载
-          </Button>
-        ),
-      },
-      {
         title: '操作',
         key: 'actions',
         fixed: 'right',
-        width: 190,
+        width: 320,
         render: (_, row) => (
           <Space size={4} className="row-actions">
             <Tooltip title="立即生成">
@@ -426,9 +509,7 @@ function BatchGenerateTablePage() {
               </Button>
             </Tooltip>
             <Tooltip title="重试">
-              <Button size="small" onClick={() => generateRow(row.id)} disabled={!row.originalPrompt.trim()}>
-                重试
-              </Button>
+              <Button size="small" onClick={() => generateRow(row.id)} disabled={!row.originalPrompt.trim() || row.status === STATUS.GENERATING || row.status === STATUS.UPLOADING}>重试</Button>
             </Tooltip>
             <Tooltip title="查看详情">
               <Button
@@ -437,6 +518,27 @@ function BatchGenerateTablePage() {
                 disabled={!row.resultImages?.length}
                 onClick={() => openImageDrawer(row.resultImages[0], row)}
               />
+            </Tooltip>
+            <Tooltip title={row.uploaded ? '已上传' : '上传到图片库'}>
+              <Button
+                size="small"
+                icon={<UploadOutlined />}
+                loading={row.status === STATUS.UPLOADING || row.uploading}
+                disabled={!row.resultImages?.length || row.uploaded || row.status === STATUS.GENERATING}
+                onClick={() => handleUploadGeneratedImage(row.id)}
+              >
+                {row.uploaded ? '已上传' : '上传'}
+              </Button>
+            </Tooltip>
+            <Tooltip title="下载当前图片">
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                disabled={!row.resultImages?.length}
+                onClick={() => handleDownloadImage(row.resultImages[0], row)}
+              >
+                下载
+              </Button>
             </Tooltip>
             <Popconfirm title="删除这条记录？" okText="删除" cancelText="取消" onConfirm={() => handleDeleteRow(row.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
@@ -540,7 +642,7 @@ function BatchGenerateTablePage() {
       <UploadImageModal
         open={uploadOpen}
         onClose={() => setUploadOpen(false)}
-        onUploaded={() => handleSearch(searchQuery)}
+        onUploaded={handleUploadedImage}
       />
       <ImageDetailDrawer
         open={drawerOpen}

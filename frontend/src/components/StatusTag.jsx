@@ -7,6 +7,9 @@ const STATUS_META = {
   idle: { color: 'default', text: '未开始' },
   waiting: { color: 'blue', text: '等待生成' },
   generating: { color: 'orange', text: '生成中' },
+  generated: { color: 'cyan', text: '待上传' },
+  uploading: { color: 'purple', text: '上传中' },
+  uploaded: { color: 'green', text: '已上传' },
   done: { color: 'green', text: '已完成' },
   failed: { color: 'red', text: '失败' },
 }
@@ -20,7 +23,7 @@ function StatusTag({ status }) {
 
   return (
     <Tag color={meta.color} className="status-tag">
-      {status === 'generating' && <LoadingOutlined className="status-loading-icon" />}
+      {(status === 'generating' || status === 'uploading') && <LoadingOutlined className="status-loading-icon" />}
       {meta.text}
     </Tag>
   )

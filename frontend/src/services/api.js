@@ -58,6 +58,37 @@ export const searchImages = async (query = '', options = {}) => {
   }
 }
 
+export const generateImageDraft = async (prompt, keywords = '', count = 1, description = '') => {
+  try {
+    const response = await apiClient.post('/generate/draft', {
+      prompt,
+      keywords,
+      count,
+      description,
+    })
+    return response.data
+  } catch (error) {
+    console.error('生成预览图失败:', error)
+    throw error
+  }
+}
+
+export const uploadGeneratedImage = async ({ prompt, keywords = '', description = '', imageBase64, fileName = '' }) => {
+  try {
+    const response = await apiClient.post('/generate/upload', {
+      prompt,
+      keywords,
+      description,
+      image_base64: imageBase64,
+      file_name: fileName,
+    })
+    return response.data
+  } catch (error) {
+    console.error('上传生成图片失败:', error)
+    throw error
+  }
+}
+
 /**
  * 加载图片库历史记录。
  * 页面刷新后由这里从后端数据库恢复图片列表；syncRemote=true 时会让后端同步一次 SFTP 远程目录。

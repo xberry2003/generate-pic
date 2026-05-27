@@ -37,10 +37,10 @@ function UploadImageModal({ open, onClose, onUploaded }) {
 
     try {
       setUploading(true)
-      await uploadImage(file, values.prompt || '', values.keywords || '', values.description || '')
+      const response = await uploadImage(file, values.prompt || '', values.keywords || '', values.description || '')
       message.success('上传成功')
       resetModal()
-      onUploaded?.()
+      onUploaded?.(response.image || response)
       onClose?.()
     } catch (error) {
       message.error(error?.response?.data?.detail || '上传失败')
@@ -77,14 +77,18 @@ function UploadImageModal({ open, onClose, onUploaded }) {
           </Dragger>
         </Form.Item>
 
-        <Form.Item name="prompt" label="Prompt">
-          <Input placeholder="图片描述，可选" />
+        <Form.Item
+          name="prompt"
+          label="原始描述"
+          rules={[{ required: true, message: '请填写原始描述，用于生成规范文件名' }]}
+        >
+          <Input placeholder="例如：一朵向日葵" />
         </Form.Item>
         <Form.Item name="keywords" label="Keywords">
           <Input placeholder="关键词，可用逗号分隔" />
         </Form.Item>
-        <Form.Item name="description" label="Description">
-          <Input.TextArea placeholder="详细描述，可选" autoSize={{ minRows: 3, maxRows: 5 }} />
+        <Form.Item name="description" label="描述扩展">
+          <Input.TextArea placeholder="可选；用于补充图片描述" autoSize={{ minRows: 3, maxRows: 5 }} />
         </Form.Item>
       </Form>
     </Modal>
