@@ -9,11 +9,13 @@ FastAPI 搴旂敤閰嶇疆鍜屽垵濮嬪寲鏂囦欢
 """
 
 import os
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
-from app.routes import generate, images, upload, storage, prompts
+from app.routes import auth, generate, images, upload, storage, prompts, workspace
+from app.services.auth_service import require_auth
 
 # 鍒涘缓 FastAPI 搴旂敤瀹炰緥
 app = FastAPI(
@@ -47,11 +49,23 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 # ========== 璺敱娉ㄥ唽 ==========
 # 娉ㄥ唽鍚勪釜妯″潡鐨勮矾鐢?
-app.include_router(generate.router, prefix="/api", tags=["generation"])
-app.include_router(images.router, prefix="/api", tags=["images"])
-app.include_router(upload.router, prefix="/api", tags=["upload"])
-app.include_router(storage.router, prefix="/api", tags=["storage"])
-app.include_router(prompts.router, prefix="/api", tags=["prompts"])
+app.include_router(auth.router, prefix="/api", tags=["auth"])
+auth_required = [Depends(require_auth)]
+app.include_router(generate.router, prefix="/api", tags=["generation"], dependencies=auth_required)
+app.include_router(images.router, prefix="/api", tags=["images"], dependencies=auth_required)
+app.include_router(upload.router, prefix="/api", tags=["upload"], dependencies=auth_required)
+app.include_router(storage.router, prefix="/api", tags=["storage"], dependencies=auth_required)
+app.include_router(prompts.router, prefix="/api", tags=["prompts"], dependencies=auth_required)
+app.include_router(workspace.router, prefix="/api", tags=["workspace"])
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 401:
+        if isinstance(exc.detail, dict):
+            return JSONResponse(status_code=401, content=exc.detail)
+        return JSONResponse(status_code=401, content={"message": str(exc.detail)})
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # ========== 搴旂敤浜嬩欢澶勭悊 ==========
 @app.on_event("startup")

@@ -9,7 +9,7 @@ export default defineConfig({
     proxy: {
       // 代理 API 请求到后端
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         rewrite: (path) => path
       }

@@ -37,3 +37,29 @@ class Image(Base):
 
     def __repr__(self):
         return f"<Image(id={self.id}, file_name='{self.file_name}', remote_path='{self.remote_path}')>"
+
+
+class WorkspaceRow(Base):
+    """Persisted per-user draft row for the batch workspace."""
+
+    __tablename__ = "workspace_rows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    row_key = Column(String(255), nullable=True)
+    original_prompt = Column(Text, nullable=True)
+    expanded_prompt = Column(Text, nullable=True)
+    expanded_prompt_touched = Column(Integer, default=0)
+    keywords = Column(Text, nullable=True)
+    count = Column(Integer, default=1)
+    status = Column(String(50), nullable=True)
+    uploaded = Column(Integer, default=0)
+    cos_key = Column(String(1000), nullable=True)
+    preview_url = Column(String(1000), nullable=True)
+    download_url = Column(String(1000), nullable=True)
+    image_db_id = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    generation_prompt_snapshot = Column(Text, nullable=True)
+    generated_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

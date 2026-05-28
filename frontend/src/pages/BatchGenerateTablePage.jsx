@@ -26,7 +26,19 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { API_ORIGIN, expandPrompt, generateImageDraft, getImageDownloadUrl, searchImages, updateImageMetadata, uploadGeneratedImage } from '../services/api'
+import {
+  API_ORIGIN,
+  createWorkspaceRow,
+  deleteWorkspaceRow,
+  expandPrompt,
+  generateImageDraft,
+  getImageDownloadUrl,
+  listWorkspaceRows,
+  searchImages,
+  updateImageMetadata,
+  updateWorkspaceRow,
+  uploadGeneratedImage,
+} from '../services/api'
 import EditableCell from '../components/EditableCell'
 import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import StatusTag from '../components/StatusTag'
@@ -37,6 +49,7 @@ const { Text } = Typography
 const DEFAULT_BATCH_ROWS = 10
 const MAX_GENERATE_CONCURRENCY = 2
 const PROMPT_EXPAND_DEBOUNCE_MS = 5000
+const WORKSPACE_SAVE_DEBOUNCE_MS = 800
 const TABLE_SCROLL_X = 1580
 const HEADER_ALIASES = {
   originalPrompt: ['prompt', '原始描述', 'originalPrompt'],
@@ -62,6 +75,8 @@ const STATUS = {
  */
 const createEmptyRow = (overrides = {}) => ({
   id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  workspaceRowId: null,
+  rowKey: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   originalPrompt: '',
   description: '',
   expandedPromptTouched: false,
@@ -99,6 +114,8 @@ const normalizeKeywords = (keywords) => {
     .map((keyword) => keyword.trim())
     .filter(Boolean)
 }
+
+const keywordsToText = (keywords) => normalizeKeywords(keywords).join(',')
 
 const parseCsvText = (csvText) => {
   const text = String(csvText || '').replace(/^\uFEFF/, '')
@@ -269,6 +286,8 @@ const metadataFromImage = (image) => {
  */
 const mapImageToRow = (image) => ({
   id: `image-${image.id}`,
+  workspaceRowId: null,
+  rowKey: `image-${image.id}-${Date.now()}`,
   originalPrompt: metadataFromImage(image).originalPrompt,
   description: metadataFromImage(image).expandedPrompt,
   keywords: normalizeKeywords(image.keywords),
@@ -285,6 +304,69 @@ const mapImageToRow = (image) => ({
   errorMessage: '',
   createdAt: image.created_at || '',
 })
+
+const serializeWorkspaceRow = (row) => ({
+  rowKey: row.rowKey || row.id,
+  originalPrompt: row.originalPrompt || '',
+  expandedPrompt: row.description || '',
+  expandedPromptTouched: Boolean(row.expandedPromptTouched),
+  keywords: keywordsToText(row.keywords),
+  count: row.count || 1,
+  status: row.status || STATUS.IDLE,
+  uploaded: Boolean(row.uploaded),
+  cosKey: row.cosKey || '',
+  previewUrl: row.uploaded || row.cosKey ? row.previewUrl || '' : '',
+  downloadUrl: row.uploaded || row.cosKey ? row.downloadUrl || '' : '',
+  dbId: row.dbId || null,
+  errorMessage: row.errorMessage || '',
+  generationPromptSnapshot: row.generationPromptSnapshot || '',
+  generatedAt: row.generatedAt || '',
+  createdAt: row.createdAt || '',
+})
+
+const mapWorkspaceRowToRow = (item) => {
+  const previewUrl = item.previewUrl || ''
+  const downloadUrl = item.downloadUrl || ''
+  const uploaded = Boolean(item.uploaded || item.cosKey)
+  return createEmptyRow({
+    id: item.rowKey || `workspace-${item.id}`,
+    workspaceRowId: item.id,
+    rowKey: item.rowKey || `workspace-${item.id}`,
+    originalPrompt: item.originalPrompt || '',
+    description: item.expandedPrompt || item.description || '',
+    expandedPromptTouched: Boolean(item.expandedPromptTouched),
+    keywords: normalizeKeywords(item.keywords),
+    count: item.count || 1,
+    status: item.status === STATUS.GENERATING || item.status === STATUS.UPLOADING
+      ? STATUS.WAITING
+      : item.status || STATUS.IDLE,
+    uploaded,
+    uploading: false,
+    cosKey: item.cosKey || '',
+    dbId: item.dbId || null,
+    previewUrl,
+    downloadUrl,
+    tempImageBase64: '',
+    tempPreviewUrl: '',
+    resultImages: previewUrl
+      ? [normalizeImageResponse({
+          id: item.dbId || item.id,
+          previewUrl,
+          downloadUrl,
+          originalPrompt: item.originalPrompt,
+          description: item.expandedPrompt || item.description,
+          uploaded,
+          cosKey: item.cosKey,
+        })]
+      : [],
+    generationPromptSnapshot: item.generationPromptSnapshot || '',
+    generatedAt: item.generatedAt || '',
+    errorMessage: item.errorMessage || '',
+    createdAt: item.createdAt || item.updatedAt || '',
+    dirty: false,
+  })
+}
+
 
 /**
  * 多维表格式图片生成工作台
@@ -314,6 +396,9 @@ function BatchGenerateTablePage() {
   const queuedRowIdsRef = useRef(new Set())
   const generateAbortMapRef = useRef(new Map())
   const metadataSaveDebounceMapRef = useRef(new Map())
+  const workspaceSaveDebounceMapRef = useRef(new Map())
+  const workspaceCreatingMapRef = useRef(new Map())
+  const restoringWorkspaceRef = useRef(true)
   const rowsRef = useRef(rows)
   const csvInputRef = useRef(null)
 
@@ -322,10 +407,35 @@ function BatchGenerateTablePage() {
   }, [rows])
 
   useEffect(() => {
+    let mounted = true
+    restoringWorkspaceRef.current = true
+    listWorkspaceRows()
+      .then((response) => {
+        if (!mounted) return
+        const restoredRows = (response.rows || []).map(mapWorkspaceRowToRow)
+        setRows(restoredRows.length ? restoredRows : Array.from({ length: DEFAULT_BATCH_ROWS }, () => createEmptyRow()))
+        setWorkMode('batch')
+        setViewMode('表格视图')
+      })
+      .catch((error) => {
+        if (!mounted) return
+        console.error('Load workspace rows failed:', error)
+        setRows(Array.from({ length: DEFAULT_BATCH_ROWS }, () => createEmptyRow()))
+      })
+      .finally(() => {
+        if (mounted) restoringWorkspaceRef.current = false
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
       expandDebounceMapRef.current.forEach((debouncedExpand) => debouncedExpand.cancel?.())
       metadataSaveDebounceMapRef.current.forEach((debouncedSave) => debouncedSave.cancel?.())
+      workspaceSaveDebounceMapRef.current.forEach((debouncedSave) => debouncedSave.flush?.())
       generateAbortMapRef.current.forEach((controller) => controller.abort())
       generateQueueRef.current = []
       queuedRowIdsRef.current.clear()
@@ -346,6 +456,60 @@ function BatchGenerateTablePage() {
 
   const keywordsToRequestString = (keywords) => normalizeKeywords(keywords).join(',')
 
+  const persistWorkspaceRow = async (rowId) => {
+    const row = getRowById(rowId)
+    if (!row || restoringWorkspaceRef.current) return
+    const payload = serializeWorkspaceRow(row)
+    if (row.workspaceRowId) {
+      const response = await updateWorkspaceRow(row.workspaceRowId, payload)
+      const savedRow = response.row
+      if (savedRow && getRowById(rowId)) {
+        updateRow(rowId, {
+          workspaceRowId: savedRow.id,
+          rowKey: savedRow.rowKey || row.rowKey,
+        })
+      }
+      return
+    }
+    if (workspaceCreatingMapRef.current.has(rowId)) return
+    const createPromise = createWorkspaceRow(payload)
+      .then((response) => {
+        const savedRow = response.row
+        if (savedRow && getRowById(rowId)) {
+          updateRow(rowId, {
+            workspaceRowId: savedRow.id,
+            rowKey: savedRow.rowKey || row.rowKey,
+          })
+        }
+      })
+      .finally(() => {
+        workspaceCreatingMapRef.current.delete(rowId)
+        window.setTimeout(() => scheduleWorkspaceSave(rowId), 0)
+      })
+    workspaceCreatingMapRef.current.set(rowId, createPromise)
+    await createPromise
+  }
+
+  const scheduleWorkspaceSave = (rowId) => {
+    if (restoringWorkspaceRef.current) return
+    if (!workspaceSaveDebounceMapRef.current.has(rowId)) {
+      workspaceSaveDebounceMapRef.current.set(
+        rowId,
+        createDebouncedFunction(() => {
+          persistWorkspaceRow(rowId).catch((error) => {
+            console.error('Save workspace row failed:', error)
+          })
+        }, WORKSPACE_SAVE_DEBOUNCE_MS)
+      )
+    }
+    workspaceSaveDebounceMapRef.current.get(rowId)()
+  }
+
+  const updateRowAndSave = (rowId, updater) => {
+    updateRow(rowId, updater)
+    window.setTimeout(() => scheduleWorkspaceSave(rowId), 0)
+  }
+
   const saveUploadedMetadata = async (rowId) => {
     const row = getRowById(rowId)
     if (!row?.dbId || !row.uploaded) return
@@ -358,14 +522,14 @@ function BatchGenerateTablePage() {
       const image = response.image
       if (!image || !getRowById(rowId)) return
       const uploadedImage = normalizeImageResponse(image)
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         resultImages: [uploadedImage],
         cosKey: uploadedImage.cosKey,
         previewUrl: uploadedImage.previewUrl,
         downloadUrl: uploadedImage.downloadUrl,
       })
     } catch (error) {
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         errorMessage: error?.response?.data?.detail || error.message || '保存详情失败',
       })
     }
@@ -402,10 +566,13 @@ function BatchGenerateTablePage() {
   })
 
   const ensureBatchRows = (minRows = DEFAULT_BATCH_ROWS) => {
+    const newRows = []
     setRows((prevRows) => {
       if (prevRows.length >= minRows) return prevRows
-      return [...prevRows, ...Array.from({ length: minRows - prevRows.length }, () => createEmptyRow())]
+      newRows.push(...Array.from({ length: minRows - prevRows.length }, () => createEmptyRow()))
+      return [...prevRows, ...newRows]
     })
+    window.setTimeout(() => newRows.forEach((row) => scheduleWorkspaceSave(row.id)), 0)
   }
 
   const activateBatchMode = () => {
@@ -431,7 +598,7 @@ function BatchGenerateTablePage() {
       if (!latestRow || !isLatest) return
       if (latestRow.expandedPromptTouched && !options.force) return
 
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         description: response.expandedPrompt || '',
         expandingPrompt: false,
         expandError: '',
@@ -441,7 +608,7 @@ function BatchGenerateTablePage() {
     } catch (error) {
       const isLatest = expandRequestSeqRef.current.get(rowId) === requestSeq
       if (!isLatest) return
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         expandingPrompt: false,
         expandError: error?.response?.data?.detail || '扩写失败，可手动填写',
       })
@@ -470,7 +637,7 @@ function BatchGenerateTablePage() {
 
   const handleRegenerateExpandedPrompt = (rowId) => {
     expandDebounceMapRef.current.get(rowId)?.cancel?.()
-    updateRow(rowId, { expandedPromptTouched: false })
+    updateRowAndSave(rowId, { expandedPromptTouched: false })
     runExpandPrompt(rowId, { force: true })
   }
 
@@ -485,7 +652,7 @@ function BatchGenerateTablePage() {
     const prompt = row.originalPrompt.trim()
     if (!prompt) {
       if (!options.silent) message.warning('请输入原始描述后再生成')
-      updateRow(rowId, { status: STATUS.IDLE })
+      updateRowAndSave(rowId, { status: STATUS.IDLE })
       return
     }
 
@@ -496,7 +663,7 @@ function BatchGenerateTablePage() {
     generateAbortMapRef.current.set(rowId, abortController)
 
     try {
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         status: STATUS.GENERATING,
         errorMessage: '',
         uploaded: false,
@@ -523,7 +690,7 @@ function BatchGenerateTablePage() {
       const resultImages = (response.images || []).map(normalizeImageResponse)
       const firstImage = resultImages[0]
 
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         status: STATUS.GENERATED,
         resultImages,
         uploaded: false,
@@ -545,7 +712,7 @@ function BatchGenerateTablePage() {
       if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || abortController.signal.aborted) {
         return
       }
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         status: STATUS.FAILED,
         errorMessage: error?.response?.data?.detail || error.message || '生成失败',
       })
@@ -596,7 +763,7 @@ function BatchGenerateTablePage() {
         createDebouncedFunction(() => {
           const row = getRowById(rowId)
           if (!row?.originalPrompt?.trim() || row.status === STATUS.GENERATING || row.status === STATUS.UPLOADING) return
-          updateRow(rowId, { status: STATUS.WAITING, dirty: true })
+          updateRowAndSave(rowId, { status: STATUS.WAITING, dirty: true })
           generateRow(rowId, { silent: true })
         }, 10000)
       )
@@ -605,7 +772,7 @@ function BatchGenerateTablePage() {
   }
 
   const handlePromptChange = (rowId, value) => {
-    updateRow(rowId, (row) => ({
+    updateRowAndSave(rowId, (row) => ({
       originalPrompt: value,
       description: row.expandedPromptTouched ? row.description : '',
       expandingPrompt: false,
@@ -630,7 +797,7 @@ function BatchGenerateTablePage() {
   }
 
   const handleRowFieldChange = (rowId, patch) => {
-    updateRow(rowId, (row) => {
+    updateRowAndSave(rowId, (row) => {
       const nextPatch = typeof patch === 'function' ? patch(row) : patch
       const hasPrompt = (nextPatch.originalPrompt ?? row.originalPrompt).trim()
       return {
@@ -644,7 +811,7 @@ function BatchGenerateTablePage() {
   }
 
   const handleDescriptionChange = (rowId, value) => {
-    updateRow(rowId, {
+    updateRowAndSave(rowId, {
       description: value,
       expandedPromptTouched: true,
       expandingPrompt: false,
@@ -655,11 +822,15 @@ function BatchGenerateTablePage() {
   }
 
   const handleAddRow = () => {
-    setRows((prevRows) => [createEmptyRow(), ...prevRows])
+    const newRow = createEmptyRow()
+    setRows((prevRows) => [newRow, ...prevRows])
+    window.setTimeout(() => scheduleWorkspaceSave(newRow.id), 0)
   }
 
   const handleAddBatchRows = (count = DEFAULT_BATCH_ROWS) => {
-    setRows((prevRows) => [...prevRows, ...Array.from({ length: count }, () => createEmptyRow())])
+    const newRows = Array.from({ length: count }, () => createEmptyRow())
+    setRows((prevRows) => [...prevRows, ...newRows])
+    window.setTimeout(() => newRows.forEach((row) => scheduleWorkspaceSave(row.id)), 0)
   }
 
   const handlePromptPaste = (rowId, event) => {
@@ -702,6 +873,7 @@ function BatchGenerateTablePage() {
 
     window.setTimeout(() => {
       targetIds.forEach((id) => {
+        scheduleWorkspaceSave(id)
         schedulePromptExpand(id)
         scheduleRowGenerate(id)
       })
@@ -768,6 +940,7 @@ function BatchGenerateTablePage() {
         )
         return [...nonEmptyRows, ...importedRows]
       })
+      window.setTimeout(() => importedRows.forEach((row) => scheduleWorkspaceSave(row.id)), 0)
       scheduleImportedRows(importedRows)
       message.success(`已导入 ${importedRows.length} 条记录，跳过 ${skipped} 条无效记录`)
     } catch (error) {
@@ -803,6 +976,7 @@ function BatchGenerateTablePage() {
     }
     const newRow = createEmptyRow()
     setRows((prevRows) => [...prevRows, newRow])
+    window.setTimeout(() => scheduleWorkspaceSave(newRow.id), 0)
     focusCell(newRow.id, columnKey)
   }
 
@@ -824,7 +998,15 @@ function BatchGenerateTablePage() {
     generateQueueRef.current = generateQueueRef.current.filter((job) => job.rowId !== rowId)
     generateAbortMapRef.current.get(rowId)?.abort()
     generateAbortMapRef.current.delete(rowId)
+    workspaceSaveDebounceMapRef.current.get(rowId)?.cancel?.()
+    workspaceSaveDebounceMapRef.current.delete(rowId)
+    const row = getRowById(rowId)
     setRows((prevRows) => prevRows.filter((row) => row.id !== rowId))
+    if (row?.workspaceRowId) {
+      deleteWorkspaceRow(row.workspaceRowId).catch((error) => {
+        console.error('Delete workspace row failed:', error)
+      })
+    }
   }
 
   /**
@@ -847,7 +1029,7 @@ function BatchGenerateTablePage() {
 
     targetRows.forEach((row) => {
       rowDebounceMapRef.current.get(row.id)?.cancel?.()
-      updateRow(row.id, { status: STATUS.WAITING, dirty: true })
+      updateRowAndSave(row.id, { status: STATUS.WAITING, dirty: true })
       enqueueGenerateRow(row.id, { silent: true })
     })
     message.success(`已加入生成队列：${targetRows.length} 行`)
@@ -859,6 +1041,7 @@ function BatchGenerateTablePage() {
       const response = await searchImages(query)
       const nextRows = (response.images || []).map(mapImageToRow)
       setRows(nextRows)
+      window.setTimeout(() => nextRows.forEach((row) => scheduleWorkspaceSave(row.id)), 0)
       message.success(`找到 ${response.total || nextRows.length} 张图片`)
     } catch (error) {
       message.error(error?.response?.data?.detail || '搜索失败')
@@ -872,11 +1055,21 @@ function BatchGenerateTablePage() {
     expandDebounceMapRef.current.forEach((debouncedExpand) => debouncedExpand.cancel?.())
     metadataSaveDebounceMapRef.current.forEach((debouncedSave) => debouncedSave.cancel?.())
     metadataSaveDebounceMapRef.current.clear()
+    workspaceSaveDebounceMapRef.current.forEach((debouncedSave) => debouncedSave.cancel?.())
+    workspaceSaveDebounceMapRef.current.clear()
     generateAbortMapRef.current.forEach((controller) => controller.abort())
     generateAbortMapRef.current.clear()
     generateQueueRef.current = []
     queuedRowIdsRef.current.clear()
-    setRows(workMode === 'batch' ? Array.from({ length: DEFAULT_BATCH_ROWS }, () => createEmptyRow()) : [])
+    const previousRows = rowsRef.current
+    const nextRows = workMode === 'batch' ? Array.from({ length: DEFAULT_BATCH_ROWS }, () => createEmptyRow()) : []
+    setRows(nextRows)
+    previousRows.forEach((row) => {
+      if (row.workspaceRowId) {
+        deleteWorkspaceRow(row.workspaceRowId).catch((error) => console.error('Delete workspace row failed:', error))
+      }
+    })
+    window.setTimeout(() => nextRows.forEach((row) => scheduleWorkspaceSave(row.id)), 0)
     setSearchQuery('')
   }
 
@@ -884,6 +1077,7 @@ function BatchGenerateTablePage() {
     if (!image) return
     const nextRow = mapImageToRow(image)
     setRows((prevRows) => [nextRow, ...prevRows])
+    window.setTimeout(() => scheduleWorkspaceSave(nextRow.id), 0)
     message.success('已添加本次上传图片')
   }
 
@@ -905,7 +1099,7 @@ function BatchGenerateTablePage() {
     }
 
     try {
-      updateRow(rowId, { status: STATUS.UPLOADING, uploading: true, errorMessage: '' })
+      updateRowAndSave(rowId, { status: STATUS.UPLOADING, uploading: true, errorMessage: '' })
       const response = await uploadGeneratedImage({
         prompt: row.originalPrompt,
         keywords: keywordsToRequestString(row.keywords),
@@ -915,7 +1109,7 @@ function BatchGenerateTablePage() {
         fileName: image.fileName,
       })
       const uploadedImage = normalizeImageResponse(response.images?.[0] || response.image)
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         status: STATUS.UPLOADED,
         uploading: false,
         uploaded: true,
@@ -928,7 +1122,7 @@ function BatchGenerateTablePage() {
       })
       message.success('上传成功')
     } catch (error) {
-      updateRow(rowId, {
+      updateRowAndSave(rowId, {
         status: STATUS.GENERATED,
         uploading: false,
         errorMessage: error?.response?.data?.detail || error.message || '上传失败',
@@ -947,7 +1141,13 @@ function BatchGenerateTablePage() {
   }
 
   const openImageDrawer = (image, row) => {
-    setActiveImage(image)
+    setActiveImage({
+      ...image,
+      originalPrompt: row?.originalPrompt || image?.originalPrompt || image?.original_prompt || image?.title || '',
+      prompt: row?.originalPrompt || image?.originalPrompt || image?.original_prompt || image?.title || '',
+      expandedPrompt: row?.description || image?.expandedPrompt || image?.expanded_prompt || image?.description || '',
+      description: row?.description || image?.expandedPrompt || image?.expanded_prompt || image?.description || '',
+    })
     setActiveRow(row)
     setDrawerOpen(true)
   }

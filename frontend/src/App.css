@@ -9,6 +9,9 @@
   padding: 0 20px;
   background: #ffffff;
   border-bottom: 1px solid #e6e9ef;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .app-brand {
@@ -43,6 +46,22 @@
   color: #6b7280;
   font-size: 12px;
   line-height: 16px;
+}
+
+.app-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.app-auth-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f4f6f8;
 }
 
 .app-body {

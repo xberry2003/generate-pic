@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Layout, Menu } from 'antd'
-import { AppstoreOutlined, FileImageOutlined } from '@ant-design/icons'
+import { Button, Layout, Menu, Spin } from 'antd'
+import { AppstoreOutlined, FileImageOutlined, LogoutOutlined } from '@ant-design/icons'
+import { AuthProvider, useAuth } from './context/AuthContext'
 import BatchGenerateTablePage from './pages/BatchGenerateTablePage'
 import GalleryPage from './pages/GalleryPage'
+import LoginPage from './pages/LoginPage'
 import './App.css'
 
 /**
@@ -13,6 +15,8 @@ import './App.css'
  * - 页面切换只发生在前端状态 currentPage，不改变任何后端接口路径。
  */
 function App() {
+  const { authenticated, checkingAuth, logout, user } = useAuth()
+
   const pageFromLocation = () => {
     const route = `${window.location.pathname}${window.location.hash}`.toLowerCase()
     if (route.includes('gallery')) return 'gallery'
@@ -21,8 +25,9 @@ function App() {
 
   const redirectLegacyRoute = () => {
     const route = `${window.location.pathname}${window.location.hash}`.toLowerCase()
+    if (route.includes('login')) return 'login'
     if (/(classic|single|generator|generate)/.test(route)) {
-      window.history.replaceState(null, '', '/')
+      window.history.replaceState(null, '', '/workspace')
       return 'batch'
     }
     return pageFromLocation()
@@ -35,6 +40,19 @@ function App() {
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
+
+  useEffect(() => {
+    if (checkingAuth) return
+    const isLoginRoute = window.location.pathname.toLowerCase().includes('login')
+    if (!authenticated && !isLoginRoute) {
+      window.history.replaceState(null, '', '/login')
+      setCurrentPage('login')
+    }
+    if (authenticated && isLoginRoute) {
+      window.history.replaceState(null, '', '/workspace')
+      setCurrentPage('batch')
+    }
+  }, [authenticated, checkingAuth])
 
   const menuItems = [
     {
@@ -51,6 +69,8 @@ function App() {
 
   const renderContent = () => {
     switch (currentPage) {
+      case 'login':
+        return <LoginPage />
       case 'batch':
         return <BatchGenerateTablePage />
       case 'gallery':
@@ -62,8 +82,26 @@ function App() {
 
   const handleMenuClick = (event) => {
     const nextPage = event.key
-    window.history.pushState(null, '', nextPage === 'gallery' ? '/gallery' : '/')
+    window.history.pushState(null, '', nextPage === 'gallery' ? '/gallery' : '/workspace')
     setCurrentPage(nextPage)
+  }
+
+  const handleLogout = async () => {
+    await logout()
+    window.history.replaceState(null, '', '/login')
+    setCurrentPage('login')
+  }
+
+  if (checkingAuth) {
+    return (
+      <div className="app-auth-loading">
+        <Spin tip="正在校验登录状态..." />
+      </div>
+    )
+  }
+
+  if (!authenticated || currentPage === 'login') {
+    return <LoginPage />
   }
 
   return (
@@ -75,6 +113,12 @@ function App() {
             <div className="brand-title">文生图图片工作台</div>
             <div className="brand-subtitle">多维表格式批量生成与图库管理</div>
           </div>
+        </div>
+        <div className="app-user">
+          <span>{user?.username || 'admin'}</span>
+          <Button size="small" icon={<LogoutOutlined />} onClick={handleLogout}>
+            退出登录
+          </Button>
         </div>
       </Layout.Header>
 
@@ -95,4 +139,10 @@ function App() {
   )
 }
 
-export default App
+export default function AppRoot() {
+  return (
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  )
+}

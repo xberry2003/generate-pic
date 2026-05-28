@@ -14,7 +14,6 @@ function splitKeywords(keywords) {
 
 function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
   const fileName = image?.fileName || image?.file_name || row?.fileName || row?.file_name || ''
-  const fileStem = fileName.replace(/\.[^.]+$/, '')
   const originalPrompt =
     image?.originalPrompt ||
     image?.original_prompt ||
@@ -22,15 +21,15 @@ function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
     image?.prompt ||
     row?.prompt ||
     image?.title ||
-    fileStem ||
-    '-'
+    ''
   const expandedPrompt =
     image?.expandedPrompt ||
     image?.expanded_prompt ||
-    row?.description ||
     image?.description ||
+    row?.expandedPrompt ||
+    row?.description ||
     image?.metadata?.description ||
-    '-'
+    ''
   const keywords = splitKeywords(row?.keywords || image?.keywords)
 
   const handleCopyDownloadUrl = async () => {

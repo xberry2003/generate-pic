@@ -1,18 +1,36 @@
 import axios from 'axios'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
+
 // 创建 axios 实例，用于与后端 API 通信
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8000/api',
+  baseURL: API_BASE,
   // 真实生图接口可能需要等待任务排队和轮询，前端超时必须长于后端 JIMENG_TIMEOUT_SECONDS。
   // 这里设置为 240 秒，避免后端仍在生成时前端先报 timeout of 60000ms exceeded。
   timeout: 240000,
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true,
 })
 
 export const API_BASE_URL = apiClient.defaults.baseURL
-export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '')
+export const API_ORIGIN = API_BASE_URL.startsWith('http') ? API_BASE_URL.replace(/\/api\/?$/, '') : ''
+
+export const login = async (username, password) => {
+  const response = await apiClient.post('/auth/login', { username, password })
+  return response.data
+}
+
+export const getCurrentUser = async () => {
+  const response = await apiClient.get('/auth/me')
+  return response.data
+}
+
+export const logout = async () => {
+  const response = await apiClient.post('/auth/logout')
+  return response.data
+}
 
 /**
  * 生成图片服务
@@ -120,6 +138,26 @@ export const updateImageMetadata = async (imageId, { originalPrompt = '', expand
     console.error('更新图片详情失败:', error)
     throw error
   }
+}
+
+export const listWorkspaceRows = async () => {
+  const response = await apiClient.get('/workspace/rows')
+  return response.data
+}
+
+export const createWorkspaceRow = async (row) => {
+  const response = await apiClient.post('/workspace/rows', row)
+  return response.data
+}
+
+export const updateWorkspaceRow = async (rowId, row) => {
+  const response = await apiClient.put(`/workspace/rows/${rowId}`, row)
+  return response.data
+}
+
+export const deleteWorkspaceRow = async (rowId) => {
+  const response = await apiClient.delete(`/workspace/rows/${rowId}`)
+  return response.data
 }
 
 /**

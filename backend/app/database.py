@@ -74,6 +74,7 @@ def init_db():
     # 鍒涘缓鎵€鏈夎〃
     Base.metadata.create_all(bind=engine)
     ensure_image_columns()
+    ensure_workspace_row_columns()
     print(f"Database initialized: {DATABASE_URL}")
 
 
@@ -102,3 +103,42 @@ def ensure_image_columns():
         for column_name, column_type in expected_columns.items():
             if column_name not in existing:
                 connection.execute(text(f"ALTER TABLE images ADD COLUMN {column_name} {column_type}"))
+
+
+def ensure_workspace_row_columns():
+    """
+    Keep existing SQLite databases compatible after adding workspace draft rows.
+    """
+
+    if "sqlite" not in DATABASE_URL:
+        return
+
+    expected_columns = {
+        "user_id": "VARCHAR(255)",
+        "row_key": "VARCHAR(255)",
+        "original_prompt": "TEXT",
+        "expanded_prompt": "TEXT",
+        "expanded_prompt_touched": "INTEGER DEFAULT 0",
+        "keywords": "TEXT",
+        "count": "INTEGER DEFAULT 1",
+        "status": "VARCHAR(50)",
+        "uploaded": "INTEGER DEFAULT 0",
+        "cos_key": "VARCHAR(1000)",
+        "preview_url": "VARCHAR(1000)",
+        "download_url": "VARCHAR(1000)",
+        "image_db_id": "INTEGER",
+        "error_message": "TEXT",
+        "generation_prompt_snapshot": "TEXT",
+        "generated_at": "DATETIME",
+        "created_at": "DATETIME",
+        "updated_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        tables = {row[0] for row in connection.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+        if "workspace_rows" not in tables:
+            return
+        existing = {row[1] for row in connection.execute(text("PRAGMA table_info(workspace_rows)"))}
+        for column_name, column_type in expected_columns.items():
+            if column_name not in existing:
+                connection.execute(text(f"ALTER TABLE workspace_rows ADD COLUMN {column_name} {column_type}"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_workspace_rows_user_id ON workspace_rows (user_id)"))
