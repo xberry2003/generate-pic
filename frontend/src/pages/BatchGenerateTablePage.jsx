@@ -26,7 +26,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { API_ORIGIN, expandPrompt, generateImageDraft, getImageDownloadUrl, searchImages, uploadGeneratedImage } from '../services/api'
+import { API_ORIGIN, expandPrompt, generateImageDraft, getImageDownloadUrl, searchImages, updateImageMetadata, uploadGeneratedImage } from '../services/api'
 import EditableCell from '../components/EditableCell'
 import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import StatusTag from '../components/StatusTag'
@@ -37,6 +37,7 @@ const { Text } = Typography
 const DEFAULT_BATCH_ROWS = 10
 const MAX_GENERATE_CONCURRENCY = 2
 const PROMPT_EXPAND_DEBOUNCE_MS = 5000
+const TABLE_SCROLL_X = 1580
 const HEADER_ALIASES = {
   originalPrompt: ['prompt', '原始描述', 'originalPrompt'],
   description: ['expandedPrompt', '描述扩充', 'description'],
@@ -78,6 +79,8 @@ const createEmptyRow = (overrides = {}) => ({
   downloadUrl: '',
   tempImageBase64: '',
   tempPreviewUrl: '',
+  generationPromptSnapshot: '',
+  generatedAt: '',
   errorMessage: '',
   createdAt: '',
   lastEditedAt: 0,
@@ -237,6 +240,10 @@ const normalizeImageResponse = (image) => {
     previewUrl,
     downloadUrl,
     imageBase64: image.imageBase64 || image.image_base64 || '',
+    originalPrompt: image.originalPrompt || image.original_prompt || image.prompt || '',
+    expandedPrompt: image.expandedPrompt || image.expanded_prompt || image.description || '',
+    description: image.description || image.expandedPrompt || image.expanded_prompt || '',
+    prompt: image.prompt || image.originalPrompt || image.original_prompt || '',
     uploaded: Boolean(image.uploaded || image.cosKey || image.remote_path),
     cosKey: image.cosKey || image.remote_path || '',
     dbId: image.dbId || image.id || null,
@@ -246,14 +253,24 @@ const normalizeImageResponse = (image) => {
   }
 }
 
+const metadataFromImage = (image) => {
+  const fileName = image.fileName || image.file_name || ''
+  const fileStem = fileName.replace(/\.[^.]+$/, '')
+  const originalPrompt = image.originalPrompt || image.original_prompt || image.prompt || image.title || fileStem || ''
+  return {
+    originalPrompt,
+    expandedPrompt: image.expandedPrompt || image.expanded_prompt || image.description || '',
+  }
+}
+
 /**
  * 把图片库搜索结果映射成表格行。
  * 注意：搜索接口返回的是图片记录，不是批量任务记录；这里用每张图片构造一行只读结果行。
  */
 const mapImageToRow = (image) => ({
   id: `image-${image.id}`,
-  originalPrompt: image.prompt || '',
-  description: image.description || image.prompt || '',
+  originalPrompt: metadataFromImage(image).originalPrompt,
+  description: metadataFromImage(image).expandedPrompt,
   keywords: normalizeKeywords(image.keywords),
   count: 1,
   status: STATUS.DONE,
@@ -263,6 +280,8 @@ const mapImageToRow = (image) => ({
   previewUrl: image.previewUrl || image.preview_url || '',
   downloadUrl: image.downloadUrl || image.download_url || '',
   resultImages: [normalizeImageResponse(image)],
+  generationPromptSnapshot: image.generationPromptSnapshot || image.generation_prompt_snapshot || '',
+  generatedAt: image.created_at || '',
   errorMessage: '',
   createdAt: image.created_at || '',
 })
@@ -294,6 +313,7 @@ function BatchGenerateTablePage() {
   const activeGenerateCountRef = useRef(0)
   const queuedRowIdsRef = useRef(new Set())
   const generateAbortMapRef = useRef(new Map())
+  const metadataSaveDebounceMapRef = useRef(new Map())
   const rowsRef = useRef(rows)
   const csvInputRef = useRef(null)
 
@@ -305,6 +325,7 @@ function BatchGenerateTablePage() {
     return () => {
       rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
       expandDebounceMapRef.current.forEach((debouncedExpand) => debouncedExpand.cancel?.())
+      metadataSaveDebounceMapRef.current.forEach((debouncedSave) => debouncedSave.cancel?.())
       generateAbortMapRef.current.forEach((controller) => controller.abort())
       generateQueueRef.current = []
       queuedRowIdsRef.current.clear()
@@ -325,6 +346,43 @@ function BatchGenerateTablePage() {
 
   const keywordsToRequestString = (keywords) => normalizeKeywords(keywords).join(',')
 
+  const saveUploadedMetadata = async (rowId) => {
+    const row = getRowById(rowId)
+    if (!row?.dbId || !row.uploaded) return
+    try {
+      const response = await updateImageMetadata(row.dbId, {
+        originalPrompt: row.originalPrompt,
+        expandedPrompt: row.description,
+        keywords: keywordsToRequestString(row.keywords),
+      })
+      const image = response.image
+      if (!image || !getRowById(rowId)) return
+      const uploadedImage = normalizeImageResponse(image)
+      updateRow(rowId, {
+        resultImages: [uploadedImage],
+        cosKey: uploadedImage.cosKey,
+        previewUrl: uploadedImage.previewUrl,
+        downloadUrl: uploadedImage.downloadUrl,
+      })
+    } catch (error) {
+      updateRow(rowId, {
+        errorMessage: error?.response?.data?.detail || error.message || '保存详情失败',
+      })
+    }
+  }
+
+  const scheduleMetadataSave = (rowId) => {
+    const row = getRowById(rowId)
+    if (!row?.dbId || !row.uploaded) return
+    if (!metadataSaveDebounceMapRef.current.has(rowId)) {
+      metadataSaveDebounceMapRef.current.set(
+        rowId,
+        createDebouncedFunction(() => saveUploadedMetadata(rowId), 800)
+      )
+    }
+    metadataSaveDebounceMapRef.current.get(rowId)()
+  }
+
   const resetGeneratedState = () => ({
     status: STATUS.WAITING,
     uploaded: false,
@@ -335,6 +393,8 @@ function BatchGenerateTablePage() {
     downloadUrl: '',
     tempImageBase64: '',
     tempPreviewUrl: '',
+    generationPromptSnapshot: '',
+    generatedAt: '',
     resultImages: [],
     errorMessage: '',
     dirty: true,
@@ -377,6 +437,7 @@ function BatchGenerateTablePage() {
         expandError: '',
         expandedPromptTouched: Boolean(options.force) ? false : latestRow.expandedPromptTouched,
       })
+      window.setTimeout(() => scheduleMetadataSave(rowId), 0)
     } catch (error) {
       const isLatest = expandRequestSeqRef.current.get(rowId) === requestSeq
       if (!isLatest) return
@@ -450,12 +511,13 @@ function BatchGenerateTablePage() {
       })
       const description = row.description.trim()
       const promptForGeneration = description || prompt
+      const generatedAt = new Date().toISOString()
       const response = await generateImageDraft(
         promptForGeneration,
         keywordsToRequestString(row.keywords),
         row.count,
         description || prompt,
-        { signal: abortController.signal }
+        { signal: abortController.signal, originalPrompt: prompt }
       )
       if (abortController.signal.aborted || !getRowById(rowId)) return
       const resultImages = (response.images || []).map(normalizeImageResponse)
@@ -472,7 +534,9 @@ function BatchGenerateTablePage() {
         downloadUrl: '',
         tempPreviewUrl: firstImage?.previewUrl || '',
         tempImageBase64: firstImage?.imageBase64 || '',
-        createdAt: resultImages[0]?.createdAt || new Date().toISOString(),
+        generationPromptSnapshot: promptForGeneration,
+        generatedAt,
+        createdAt: resultImages[0]?.createdAt || generatedAt,
         errorMessage: '',
         dirty: false,
       })
@@ -571,10 +635,23 @@ function BatchGenerateTablePage() {
       const hasPrompt = (nextPatch.originalPrompt ?? row.originalPrompt).trim()
       return {
         ...nextPatch,
-        ...(hasPrompt ? resetGeneratedState() : { ...resetGeneratedState(), status: STATUS.IDLE }),
+        status: hasPrompt && row.status === STATUS.IDLE ? STATUS.WAITING : row.status,
+        dirty: true,
+        lastEditedAt: Date.now(),
       }
     })
-    window.setTimeout(() => scheduleRowGenerate(rowId), 0)
+    window.setTimeout(() => scheduleMetadataSave(rowId), 0)
+  }
+
+  const handleDescriptionChange = (rowId, value) => {
+    updateRow(rowId, {
+      description: value,
+      expandedPromptTouched: true,
+      expandingPrompt: false,
+      expandError: '',
+      lastEditedAt: Date.now(),
+    })
+    window.setTimeout(() => scheduleMetadataSave(rowId), 0)
   }
 
   const handleAddRow = () => {
@@ -741,6 +818,8 @@ function BatchGenerateTablePage() {
     expandDebounceMapRef.current.get(rowId)?.cancel?.()
     expandDebounceMapRef.current.delete(rowId)
     expandRequestSeqRef.current.delete(rowId)
+    metadataSaveDebounceMapRef.current.get(rowId)?.cancel?.()
+    metadataSaveDebounceMapRef.current.delete(rowId)
     queuedRowIdsRef.current.delete(rowId)
     generateQueueRef.current = generateQueueRef.current.filter((job) => job.rowId !== rowId)
     generateAbortMapRef.current.get(rowId)?.abort()
@@ -791,6 +870,8 @@ function BatchGenerateTablePage() {
   const handleRefresh = () => {
     rowDebounceMapRef.current.forEach((debouncedGenerate) => debouncedGenerate.cancel?.())
     expandDebounceMapRef.current.forEach((debouncedExpand) => debouncedExpand.cancel?.())
+    metadataSaveDebounceMapRef.current.forEach((debouncedSave) => debouncedSave.cancel?.())
+    metadataSaveDebounceMapRef.current.clear()
     generateAbortMapRef.current.forEach((controller) => controller.abort())
     generateAbortMapRef.current.clear()
     generateQueueRef.current = []
@@ -829,6 +910,7 @@ function BatchGenerateTablePage() {
         prompt: row.originalPrompt,
         keywords: keywordsToRequestString(row.keywords),
         description: row.description || row.originalPrompt,
+        originalPrompt: row.originalPrompt,
         imageBase64: image.imageBase64,
         fileName: image.fileName,
       })
@@ -892,7 +974,7 @@ function BatchGenerateTablePage() {
       {
         title: '描述扩充',
         dataIndex: 'description',
-        width: 300,
+        width: 360,
         render: (_, row) => (
           <div className="expand-cell">
             <EditableCell
@@ -900,12 +982,7 @@ function BatchGenerateTablePage() {
               value={row.description}
               placeholder="本地规则扩写，可手动编辑"
               disabled={row.status === STATUS.GENERATING || row.expandingPrompt}
-              onChange={(value) => handleRowFieldChange(row.id, {
-                description: value,
-                expandedPromptTouched: true,
-                expandingPrompt: false,
-                expandError: '',
-              })}
+              onChange={(value) => handleDescriptionChange(row.id, value)}
               onKeyDown={(event) => handleCellKeyDown(row.id, 'description', event)}
               dataCellId={`${row.id}-description`}
             />
@@ -927,7 +1004,7 @@ function BatchGenerateTablePage() {
       {
         title: 'Keywords',
         dataIndex: 'keywords',
-        width: 240,
+        width: 260,
         render: (_, row) => (
           <EditableCell
             type="tags"
@@ -942,7 +1019,7 @@ function BatchGenerateTablePage() {
       {
         title: '状态',
         dataIndex: 'status',
-        width: 112,
+        width: 120,
         render: (status, row) => (
           <Space direction="vertical" size={2}>
             <StatusTag status={status} />
@@ -953,7 +1030,7 @@ function BatchGenerateTablePage() {
       {
         title: '结果图片',
         dataIndex: 'resultImages',
-        width: 120,
+        width: 160,
         render: (images, row) =>
           images?.length ? (
             <div className="result-thumbs">
@@ -976,7 +1053,7 @@ function BatchGenerateTablePage() {
         title: '操作',
         key: 'actions',
         fixed: 'right',
-        width: 260,
+        width: 360,
         render: (_, row) => (
           <Space size={4} className="row-actions" wrap={false}>
             <Tooltip title="立即生成">
@@ -1112,8 +1189,9 @@ function BatchGenerateTablePage() {
             columns={columns}
             dataSource={rows}
             pagination={false}
+            tableLayout="fixed"
             locale={{ emptyText: '点击“批量生成”进入表格模式，或点击“新增记录”开始单条生成' }}
-            scroll={{ x: 1350, y: 'calc(100vh - 260px)' }}
+            scroll={{ x: TABLE_SCROLL_X, y: 'calc(100vh - 260px)' }}
             className="batch-table"
           />
         ) : (

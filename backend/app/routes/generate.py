@@ -33,6 +33,7 @@ class GenerateRequest(BaseModel):
     prompt: str
     keywords: str | list[str] = ""
     description: str = ""
+    original_prompt: str = ""
     count: int = 1
 
 
@@ -52,6 +53,7 @@ class UploadDraftRequest(BaseModel):
     prompt: str
     keywords: str | list[str] = ""
     description: str = ""
+    original_prompt: str = ""
     image_base64: str
     file_name: str = ""
 
@@ -88,8 +90,9 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
         for index, image_data in enumerate(image_data_list):
             png_bytes = normalize_image_to_png_bytes(image_data)
             image_description = (request.description or request.prompt).strip()
+            filename_description = (request.original_prompt or request.prompt).strip()
             file_name = generate_image_filename(
-                description=image_description,
+                description=filename_description,
                 prompt=request.prompt,
             )
             try:
@@ -149,6 +152,7 @@ async def generate_image_draft(request: GenerateRequest):
             count=request.count,
         )
         images = []
+        filename_description = (request.original_prompt or request.prompt).strip()
         for index, image_data in enumerate(image_data_list):
             png_bytes = normalize_image_to_png_bytes(image_data)
             b64 = base64.b64encode(png_bytes).decode("ascii")
@@ -160,7 +164,7 @@ async def generate_image_draft(request: GenerateRequest):
                     "description": request.description or request.prompt,
                     "keywords": keyword_text,
                     "mimeType": "image/png",
-                    "fileName": generate_image_filename(description=request.description or request.prompt, prompt=request.prompt),
+                    "fileName": generate_image_filename(description=filename_description, prompt=request.prompt),
                     "imageBase64": b64,
                     "previewUrl": f"data:image/png;base64,{b64}",
                     "uploaded": False,
@@ -187,7 +191,11 @@ async def upload_generated_draft(request: UploadDraftRequest, db: Session = Depe
         png_bytes = normalize_image_to_png_bytes(image_bytes)
         keyword_text = ",".join(request.keywords) if isinstance(request.keywords, list) else request.keywords
         image_description = (request.description or request.prompt).strip()
-        file_name = request.file_name or generate_image_filename(description=image_description, prompt=request.prompt)
+        filename_description = (request.original_prompt or request.prompt).strip()
+        file_name = generate_image_filename(
+            description=filename_description,
+            prompt=request.prompt,
+        ) if filename_description else request.file_name or generate_image_filename()
         remote_info = SFTPStorageClient().upload_bytes(png_bytes, file_name)
         db_image = create_image_record(
             db,

@@ -62,14 +62,24 @@
   gap: 4px;
 }
 
-.image-file-name,
+.gallery-description,
 .image-time {
   display: block;
   max-width: 100%;
   overflow: hidden;
+  font-size: 12px;
+}
+
+.gallery-description {
+  min-height: 18px;
+  line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+}
+
+.image-time {
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .image-time {

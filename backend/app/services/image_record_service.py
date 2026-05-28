@@ -17,9 +17,13 @@ def image_to_dict(image: ImageModel) -> dict:
     download_url = image.download_url or f"/api/images/{image.id}/download"
     return {
         "id": image.id,
-        "title": image.description or image.prompt or image.file_name or f"image-{image.id}",
+        "title": image.prompt or image.description or image.file_name or f"image-{image.id}",
         "prompt": image.prompt or "",
+        "originalPrompt": image.prompt or "",
+        "original_prompt": image.prompt or "",
         "description": image.description or "",
+        "expandedPrompt": image.description or "",
+        "expanded_prompt": image.description or "",
         "keywords": image.keywords or "",
         "file_name": image.file_name or "",
         "fileName": image.file_name or "",

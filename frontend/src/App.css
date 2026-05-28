@@ -1,5 +1,6 @@
 .app-shell {
   min-height: 100vh;
+  overflow: hidden;
   background: #f4f6f8;
 }
 
@@ -46,9 +47,14 @@
 
 .app-body {
   min-height: calc(100vh - 58px);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .app-sider {
+  flex: 0 0 216px !important;
+  max-width: 216px !important;
+  min-width: 216px !important;
   background: #ffffff !important;
   border-right: 1px solid #e6e9ef;
 }
@@ -60,8 +66,11 @@
 }
 
 .app-content {
+  flex: 1;
   min-width: 0;
+  max-width: 100%;
   padding: 14px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #f4f6f8;
 }

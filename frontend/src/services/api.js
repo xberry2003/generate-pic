@@ -21,13 +21,14 @@ export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '')
  * @param {number} count - 生成图片数量，默认为 1
  * @returns {Promise} 返回生成的图片信息
  */
-export const generateImages = async (prompt, keywords = '', count = 1, description = '') => {
+export const generateImages = async (prompt, keywords = '', count = 1, description = '', options = {}) => {
   try {
     const response = await apiClient.post('/generate', {
       prompt,
       keywords,
       count,
       description,
+      original_prompt: options.originalPrompt || '',
     })
     return response.data
   } catch (error) {
@@ -65,6 +66,7 @@ export const generateImageDraft = async (prompt, keywords = '', count = 1, descr
       keywords,
       count,
       description,
+      original_prompt: options.originalPrompt || '',
     }, {
       signal: options.signal,
     })
@@ -89,18 +91,33 @@ export const expandPrompt = async (prompt, options = {}) => {
   }
 }
 
-export const uploadGeneratedImage = async ({ prompt, keywords = '', description = '', imageBase64, fileName = '' }) => {
+export const uploadGeneratedImage = async ({ prompt, keywords = '', description = '', originalPrompt = '', imageBase64, fileName = '' }) => {
   try {
     const response = await apiClient.post('/generate/upload', {
       prompt,
       keywords,
       description,
+      original_prompt: originalPrompt,
       image_base64: imageBase64,
       file_name: fileName,
     })
     return response.data
   } catch (error) {
     console.error('上传生成图片失败:', error)
+    throw error
+  }
+}
+
+export const updateImageMetadata = async (imageId, { originalPrompt = '', expandedPrompt = '', keywords = '' }) => {
+  try {
+    const response = await apiClient.patch(`/images/${imageId}/metadata`, {
+      originalPrompt,
+      expandedPrompt,
+      keywords,
+    })
+    return response.data
+  } catch (error) {
+    console.error('更新图片详情失败:', error)
     throw error
   }
 }

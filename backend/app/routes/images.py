@@ -5,7 +5,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import desc, or_
+from pydantic import BaseModel
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -15,6 +16,12 @@ from app.services.image_record_service import image_to_dict, sync_remote_files_t
 from app.services.remote_storage_service import RemoteStorageError, SFTPStorageClient, description_from_filename
 
 router = APIRouter()
+
+
+class ImageMetadataUpdateRequest(BaseModel):
+    originalPrompt: str = ""
+    expandedPrompt: str = ""
+    keywords: str | list[str] = ""
 
 
 def mime_type_for_filename(file_name: str) -> str:
@@ -51,11 +58,15 @@ def cos_file_to_dict(remote_file, db_by_path: dict[str, ImageModel], index: int)
     download_url = f"/api/images/download?key={encoded_key}"
     title = remote_file.file_name
     if db_image:
-        title = db_image.description or db_image.prompt or remote_file.file_name
+        title = db_image.prompt or db_image.description or remote_file.file_name
         payload = {
             "id": db_image.id,
             "prompt": db_image.prompt or "",
+            "originalPrompt": db_image.prompt or "",
+            "original_prompt": db_image.prompt or "",
             "description": db_image.description or "",
+            "expandedPrompt": db_image.description or "",
+            "expanded_prompt": db_image.description or "",
             "keywords": db_image.keywords or "",
             "created_at": db_image.created_at,
             "updated_at": db_image.updated_at,
@@ -67,8 +78,12 @@ def cos_file_to_dict(remote_file, db_by_path: dict[str, ImageModel], index: int)
         title = description
         payload = {
             "id": f"cos-{index}",
-            "prompt": "",
-            "description": description,
+            "prompt": description,
+            "originalPrompt": description,
+            "original_prompt": description,
+            "description": "",
+            "expandedPrompt": "",
+            "expanded_prompt": "",
             "keywords": "",
             "created_at": remote_file.modified_at,
             "updated_at": remote_file.modified_at,
@@ -103,8 +118,16 @@ def list_cos_images_with_metadata(db: Session) -> list[dict]:
     remote_paths = [remote_file.remote_path for remote_file in remote_files]
     db_images = []
     if remote_paths:
-        db_images = db.query(ImageModel).filter(ImageModel.remote_path.in_(remote_paths)).all()
-    db_by_path = {image.remote_path: image for image in db_images if image.remote_path}
+        db_images = (
+            db.query(ImageModel)
+            .filter(ImageModel.remote_path.in_(remote_paths))
+            .order_by(desc(ImageModel.updated_at), desc(ImageModel.created_at))
+            .all()
+        )
+    db_by_path = {}
+    for image in db_images:
+        if image.remote_path and image.remote_path not in db_by_path:
+            db_by_path[image.remote_path] = image
     remote_files.sort(key=lambda item: item.modified_at or datetime.min, reverse=True)
     return [cos_file_to_dict(remote_file, db_by_path, index) for index, remote_file in enumerate(remote_files)]
 
@@ -173,6 +196,34 @@ async def search_images(
     except Exception as exc:
         print(f"Search error: {exc}")
         raise HTTPException(status_code=500, detail=f"Search failed: {exc}")
+
+
+@router.patch("/images/{image_id}/metadata")
+async def update_image_metadata(
+    image_id: int,
+    request: ImageMetadataUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    image = db.query(ImageModel).filter(ImageModel.id == image_id).first()
+    if not image:
+        raise HTTPException(status_code=404, detail=f"Image {image_id} not found")
+
+    keyword_text = ",".join(request.keywords) if isinstance(request.keywords, list) else request.keywords
+    original_prompt = request.originalPrompt.strip()
+    expanded_prompt = request.expandedPrompt.strip()
+
+    image.prompt = original_prompt or image.prompt or ""
+    image.description = expanded_prompt
+    image.keywords = keyword_text or ""
+    image.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(image)
+
+    return {
+        "success": True,
+        "message": "Metadata updated",
+        "image": image_to_dict(image),
+    }
 
 
 def load_image_bytes(image_id: int, db: Session) -> tuple[ImageModel, bytes]:

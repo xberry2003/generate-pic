@@ -4,13 +4,34 @@ import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
 
 const { Paragraph, Text } = Typography
 
-/**
- * 图片详情抽屉
- * 职责：展示用户在表格缩略图或图库卡片中选中的图片详情。
- * 接口约束：下载按钮使用传入的 downloadUrl，该值由现有 getImageDownloadUrl(imageId) 生成，继续走后端下载接口。
- */
+function splitKeywords(keywords) {
+  if (Array.isArray(keywords)) return keywords.filter(Boolean)
+  return String(keywords || '')
+    .split(',')
+    .map((keyword) => keyword.trim())
+    .filter(Boolean)
+}
+
 function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
-  const keywords = row?.keywords || []
+  const fileName = image?.fileName || image?.file_name || row?.fileName || row?.file_name || ''
+  const fileStem = fileName.replace(/\.[^.]+$/, '')
+  const originalPrompt =
+    image?.originalPrompt ||
+    image?.original_prompt ||
+    row?.originalPrompt ||
+    image?.prompt ||
+    row?.prompt ||
+    image?.title ||
+    fileStem ||
+    '-'
+  const expandedPrompt =
+    image?.expandedPrompt ||
+    image?.expanded_prompt ||
+    row?.description ||
+    image?.description ||
+    image?.metadata?.description ||
+    '-'
+  const keywords = splitKeywords(row?.keywords || image?.keywords)
 
   const handleCopyDownloadUrl = async () => {
     if (!image?.downloadUrl) return
@@ -39,14 +60,14 @@ function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
     >
       {!image ? null : (
         <Space direction="vertical" size="large" className="drawer-content">
-          <Image src={image.previewUrl || image.url} alt={row?.originalPrompt || '图片预览'} className="drawer-image" />
+          <Image src={image.previewUrl || image.url} alt={originalPrompt} className="drawer-image" />
 
           <Descriptions column={1} size="small" bordered>
             <Descriptions.Item label="原始描述">
-              <Paragraph className="drawer-paragraph">{row?.originalPrompt || '-'}</Paragraph>
+              <Paragraph className="drawer-paragraph">{originalPrompt}</Paragraph>
             </Descriptions.Item>
             <Descriptions.Item label="描述扩充">
-              <Paragraph className="drawer-paragraph">{row?.description || '-'}</Paragraph>
+              <Paragraph className="drawer-paragraph">{expandedPrompt}</Paragraph>
             </Descriptions.Item>
             <Descriptions.Item label="关键词">
               {keywords.length > 0 ? keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) : '-'}

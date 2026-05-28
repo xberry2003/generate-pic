@@ -3,16 +3,19 @@ import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, 
 import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
 import { API_ORIGIN, getImageDownloadUrl, listImages, searchImages } from '../services/api'
+import ImageDetailDrawer from '../components/ImageDetailDrawer'
 import './GalleryPage.css'
 
 const { Text } = Typography
 /**
  * 把后端返回的图片字段统一成图库卡片需要的结构。
- * 数据流：数据库记录 -> 前端展示模型；描述优先使用 description/prompt/file_name，图片地址仍然走后端 preview/download 接口。
+ * 数据流：数据库记录 -> 前端展示模型；卡片标题用简洁标题，副标题用描述扩充，图片地址仍然走后端 preview/download 接口。
  */
 const normalizeGalleryImage = (image) => {
   const fileName = image.file_name || image.fileName || ''
-  const title = image.description || image.prompt || fileName || image.cosKey || `image-${image.id}`
+  const title = image.prompt || image.title || image.description || fileName || image.cosKey || `image-${image.id}`
+  const originalPrompt = image.originalPrompt || image.original_prompt || image.prompt || image.title || fileName.replace(/\.[^.]+$/, '') || ''
+  const expandedPrompt = image.expandedPrompt || image.expanded_prompt || image.description || ''
   const previewPath = image.previewUrl || image.preview_url || image.url || `/api/images/${image.id}/preview`
   const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
   const downloadPath = image.downloadUrl || image.download_url || getImageDownloadUrl(image.id)
@@ -21,6 +24,10 @@ const normalizeGalleryImage = (image) => {
   return {
     ...image,
     title,
+    originalPrompt,
+    expandedPrompt,
+    description: expandedPrompt,
+    cardDescription: expandedPrompt || '-',
     file_name: fileName,
     created_at: image.created_at || image.lastModified,
     previewUrl,
@@ -41,6 +48,8 @@ function GalleryPage() {
   const [images, setImages] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [activeImage, setActiveImage] = useState(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 12
   const debouncedSearchRef = useRef(null)
@@ -104,11 +113,17 @@ function GalleryPage() {
     loadImages({ syncRemote: true, showToast: true })
   }
 
-  const handleDownload = (image) => {
+  const handleDownload = (image, event = null) => {
+    event?.stopPropagation?.()
     const link = document.createElement('a')
     link.href = image.downloadUrl
     link.download = image.file_name || `image-${image.id}.png`
     link.click()
+  }
+
+  const openImageDrawer = (image) => {
+    setActiveImage(image)
+    setDrawerOpen(true)
   }
 
   const paginatedImages = useMemo(
@@ -162,6 +177,7 @@ function GalleryPage() {
                   <Card
                     hoverable
                     className="image-card"
+                    onClick={() => openImageDrawer(image)}
                     cover={
                       <div className="image-wrapper">
                         <Image
@@ -177,7 +193,7 @@ function GalleryPage() {
                         type="primary"
                         size="small"
                         icon={<DownloadOutlined />}
-                        onClick={() => handleDownload(image)}
+                        onClick={(event) => handleDownload(image, event)}
                       >
                         下载
                       </Button>,
@@ -196,8 +212,8 @@ function GalleryPage() {
                               ))}
                             </div>
                           )}
-                          <Text type="secondary" className="image-file-name" title={image.file_name}>
-                            {image.file_name || '服务器图片'}
+                          <Text type="secondary" className="gallery-description" title={image.cardDescription}>
+                            {image.cardDescription}
                           </Text>
                           <div className="image-time" title={new Date(image.created_at).toLocaleString()}>
                             {image.created_at ? new Date(image.created_at).toLocaleString() : ''}
@@ -226,6 +242,18 @@ function GalleryPage() {
           )}
         </Space>
       </Card>
+      <ImageDetailDrawer
+        open={drawerOpen}
+        image={activeImage}
+        row={activeImage ? {
+          originalPrompt: activeImage.originalPrompt,
+          description: activeImage.expandedPrompt || activeImage.description,
+          keywords: activeImage.keywordsText,
+          createdAt: activeImage.created_at,
+        } : null}
+        onClose={() => setDrawerOpen(false)}
+        onDownload={handleDownload}
+      />
     </div>
   )
 }
