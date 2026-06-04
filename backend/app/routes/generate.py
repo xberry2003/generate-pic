@@ -7,8 +7,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.auth_service import require_auth
 from app.services.image_generation_service import call_image_generation_api, save_image_file
 from app.services.image_record_service import create_image_record, image_to_dict
+from app.services.kdocs_usage_event_service import report_minimax_usage_event
 from app.services.minimax_client import MiniMaxClientError, MiniMaxImageGenerationClient
 from app.services.remote_storage_service import (
     RemoteStorageError,
@@ -16,6 +18,7 @@ from app.services.remote_storage_service import (
     generate_image_filename,
     normalize_image_to_png_bytes,
 )
+from app.services.usage_monitor_service import elapsed_ms, new_usage_timer, record_generation_usage
 
 router = APIRouter()
 
@@ -66,12 +69,17 @@ async def provider_health():
 
 
 @router.post("/generate", response_model=GenerateResponse)
-async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)):
+async def generate_image(
+    request: GenerateRequest,
+    user: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
     """
     生成图片接口。
     数据流：前端 prompt -> 即梦生成 bytes -> 统一转 PNG -> SFTP 上传 -> 数据库落库 -> 返回后端代理预览/下载 URL。
     """
 
+    timer = new_usage_timer()
     try:
         if not request.prompt or not request.prompt.strip():
             raise HTTPException(status_code=400, detail="Prompt is required")
@@ -83,6 +91,19 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
             prompt=request.prompt,
             keywords=keyword_text,
             count=request.count,
+        )
+        record_generation_usage(
+            db,
+            user=user,
+            endpoint="/api/generate",
+            prompt=request.prompt,
+            requested_count=request.count,
+            generated_count=len(image_data_list),
+            latency_ms=elapsed_ms(timer),
+        )
+        await report_minimax_usage_event(
+            source="text2image",
+            remark=f"/api/generate success; generated={len(image_data_list)}",
         )
 
         storage = SFTPStorageClient()
@@ -128,6 +149,16 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
         raise
     except MiniMaxClientError as exc:
         print(f"Generation provider error: {exc}")
+        record_generation_usage(
+            db,
+            user=user,
+            endpoint="/api/generate",
+            prompt=request.prompt,
+            requested_count=request.count,
+            status="failed",
+            error_message=str(exc),
+            latency_ms=elapsed_ms(timer),
+        )
         raise HTTPException(status_code=500, detail=str(exc))
     except RemoteStorageError as exc:
         print(f"Remote storage error: {exc}")
@@ -138,7 +169,12 @@ async def generate_image(request: GenerateRequest, db: Session = Depends(get_db)
 
 
 @router.post("/generate/draft", response_model=DraftGenerateResponse)
-async def generate_image_draft(request: GenerateRequest):
+async def generate_image_draft(
+    request: GenerateRequest,
+    user: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    timer = new_usage_timer()
     try:
         if not request.prompt or not request.prompt.strip():
             raise HTTPException(status_code=400, detail="Prompt is required")
@@ -150,6 +186,19 @@ async def generate_image_draft(request: GenerateRequest):
             prompt=request.prompt,
             keywords=keyword_text,
             count=request.count,
+        )
+        record_generation_usage(
+            db,
+            user=user,
+            endpoint="/api/generate/draft",
+            prompt=request.prompt,
+            requested_count=request.count,
+            generated_count=len(image_data_list),
+            latency_ms=elapsed_ms(timer),
+        )
+        await report_minimax_usage_event(
+            source="text2image",
+            remark=f"/api/generate/draft success; generated={len(image_data_list)}",
         )
         images = []
         filename_description = (request.original_prompt or request.prompt).strip()
@@ -175,6 +224,16 @@ async def generate_image_draft(request: GenerateRequest):
     except HTTPException:
         raise
     except MiniMaxClientError as exc:
+        record_generation_usage(
+            db,
+            user=user,
+            endpoint="/api/generate/draft",
+            prompt=request.prompt,
+            requested_count=request.count,
+            status="failed",
+            error_message=str(exc),
+            latency_ms=elapsed_ms(timer),
+        )
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Draft generation failed: {exc}")

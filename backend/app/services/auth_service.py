@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, Request, status
 from dotenv import load_dotenv
+from fastapi import HTTPException, Request, status
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=True)
 
@@ -31,8 +31,13 @@ def session_secret() -> str:
     return hashlib.sha256(f"{username}:{password}:generate-pic".encode("utf-8")).hexdigest()
 
 
-def user_payload(username: str) -> dict[str, str]:
-    return {"username": username, "role": "admin"}
+def user_payload(username: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"username": username, "name": username, "role": "admin"}
+    if extra:
+        payload.update(extra)
+        payload["username"] = str(payload.get("username") or payload.get("name") or username)
+        payload["name"] = str(payload.get("name") or payload.get("username") or username)
+    return payload
 
 
 def _b64encode(data: bytes) -> str:
@@ -44,12 +49,17 @@ def _b64decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(f"{data}{padding}")
 
 
-def create_session_cookie(username: str) -> str:
+def create_session_cookie(username: str, extra: dict[str, Any] | None = None) -> str:
     payload = {
         "username": username,
+        "name": username,
         "role": "admin",
         "exp": int(time.time()) + SESSION_MAX_AGE_SECONDS,
     }
+    if extra:
+        payload.update(extra)
+        payload["username"] = str(payload.get("username") or payload.get("name") or username)
+        payload["name"] = str(payload.get("name") or payload.get("username") or username)
     payload_text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     encoded_payload = _b64encode(payload_text.encode("utf-8"))
     signature = hmac.new(
@@ -87,14 +97,15 @@ def authenticate_admin(username: str, password: str) -> bool:
     return hmac.compare_digest(username, admin_username) and hmac.compare_digest(password, admin_password)
 
 
-def current_user_from_request(request: Request) -> dict[str, str] | None:
+def current_user_from_request(request: Request) -> dict[str, Any] | None:
     payload = parse_session_cookie(request.cookies.get(AUTH_COOKIE_NAME))
     if not payload:
         return None
-    return user_payload(str(payload.get("username") or "admin"))
+    username = str(payload.get("username") or payload.get("name") or "admin")
+    return user_payload(username, {key: value for key, value in payload.items() if key != "exp"})
 
 
-def require_auth(request: Request) -> dict[str, str]:
+def require_auth(request: Request) -> dict[str, Any]:
     user = current_user_from_request(request)
     if not user:
         raise HTTPException(

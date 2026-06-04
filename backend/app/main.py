@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
-from app.routes import auth, generate, images, upload, storage, prompts, workspace
+from app.routes import admin_usage, auth, generate, images, upload, storage, prompts, workspace
 from app.services.auth_service import require_auth
 
 # 鍒涘缓 FastAPI 搴旂敤瀹炰緥
@@ -30,8 +30,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",      # Vite 鍓嶇寮€鍙戞湇鍔″櫒
+        "http://localhost:5174",
         "http://localhost:3000",      # 鍏朵粬鍙兘鐨勫墠绔鍙?
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://127.0.0.1:3000",
     ],
     allow_credentials=True,           # 鍏佽鍙戦€佽璇佷俊鎭紙濡?cookies锛?
@@ -56,6 +58,7 @@ app.include_router(images.router, prefix="/api", tags=["images"], dependencies=a
 app.include_router(upload.router, prefix="/api", tags=["upload"], dependencies=auth_required)
 app.include_router(storage.router, prefix="/api", tags=["storage"], dependencies=auth_required)
 app.include_router(prompts.router, prefix="/api", tags=["prompts"], dependencies=auth_required)
+app.include_router(admin_usage.router, prefix="/api", tags=["admin"])
 app.include_router(workspace.router, prefix="/api", tags=["workspace"])
 
 

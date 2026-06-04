@@ -1,19 +1,10 @@
 import React from 'react'
-import { Button, Descriptions, Drawer, Image, Space, Tag, Typography, message } from 'antd'
+import { Button, Descriptions, Drawer, Image, Space, Typography, message } from 'antd'
 import { CopyOutlined, DownloadOutlined } from '@ant-design/icons'
 
 const { Paragraph, Text } = Typography
 
-function splitKeywords(keywords) {
-  if (Array.isArray(keywords)) return keywords.filter(Boolean)
-  return String(keywords || '')
-    .split(',')
-    .map((keyword) => keyword.trim())
-    .filter(Boolean)
-}
-
 function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
-  const fileName = image?.fileName || image?.file_name || row?.fileName || row?.file_name || ''
   const originalPrompt =
     image?.originalPrompt ||
     image?.original_prompt ||
@@ -22,15 +13,6 @@ function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
     row?.prompt ||
     image?.title ||
     ''
-  const expandedPrompt =
-    image?.expandedPrompt ||
-    image?.expanded_prompt ||
-    image?.description ||
-    row?.expandedPrompt ||
-    row?.description ||
-    image?.metadata?.description ||
-    ''
-  const keywords = splitKeywords(row?.keywords || image?.keywords)
 
   const handleCopyDownloadUrl = async () => {
     if (!image?.downloadUrl) return
@@ -64,12 +46,6 @@ function ImageDetailDrawer({ open, image, row, onClose, onDownload }) {
           <Descriptions column={1} size="small" bordered>
             <Descriptions.Item label="原始描述">
               <Paragraph className="drawer-paragraph">{originalPrompt}</Paragraph>
-            </Descriptions.Item>
-            <Descriptions.Item label="描述扩充">
-              <Paragraph className="drawer-paragraph">{expandedPrompt}</Paragraph>
-            </Descriptions.Item>
-            <Descriptions.Item label="关键词">
-              {keywords.length > 0 ? keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) : '-'}
             </Descriptions.Item>
             <Descriptions.Item label="创建时间">{image.createdAt || row?.createdAt || '-'}</Descriptions.Item>
             <Descriptions.Item label="下载链接">

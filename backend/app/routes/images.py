@@ -1,10 +1,14 @@
 import os
 import posixpath
+import io
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from PIL import Image as PILImage
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -16,6 +20,11 @@ from app.services.image_record_service import image_to_dict, sync_remote_files_t
 from app.services.remote_storage_service import RemoteStorageError, SFTPStorageClient, description_from_filename
 
 router = APIRouter()
+THUMBNAIL_SIZE = (640, 360)
+THUMBNAIL_CACHE_DIR = Path(os.getenv(
+    "THUMBNAIL_CACHE_DIR",
+    Path(__file__).resolve().parents[2] / "data" / "thumbnails",
+))
 
 
 class ImageMetadataUpdateRequest(BaseModel):
@@ -41,6 +50,12 @@ def query_images(db: Session):
     return db.query(ImageModel).order_by(desc(ImageModel.created_at))
 
 
+def build_thumbnail_url(cos_key: str) -> str:
+    if not cos_key:
+        return ""
+    return f"/api/images/thumbnail?key={quote(cos_key, safe='')}"
+
+
 def sync_remote_images(db: Session) -> int:
     """
     把公司服务器 SFTP 目录中的图片同步到数据库。
@@ -53,6 +68,7 @@ def sync_remote_images(db: Session) -> int:
 
 def cos_file_to_dict(remote_file, db_by_path: dict[str, ImageModel], index: int) -> dict:
     db_image = db_by_path.get(remote_file.remote_path)
+    thumbnail_url = build_thumbnail_url(remote_file.remote_path)
     encoded_key = quote(remote_file.remote_path, safe="")
     preview_url = f"/api/images/preview?key={encoded_key}"
     download_url = f"/api/images/download?key={encoded_key}"
@@ -100,6 +116,8 @@ def cos_file_to_dict(remote_file, db_by_path: dict[str, ImageModel], index: int)
             "cosKey": remote_file.remote_path,
             "preview_url": preview_url,
             "previewUrl": preview_url,
+            "thumbnail_url": thumbnail_url,
+            "thumbnailUrl": thumbnail_url,
             "download_url": download_url,
             "downloadUrl": download_url,
             "url": preview_url,
@@ -226,6 +244,38 @@ async def update_image_metadata(
     }
 
 
+@router.delete("/images/{image_id}")
+async def delete_image(
+    image_id: int,
+    cos_key: str = Query("", alias="cosKey"),
+    file_name: str = Query("", alias="fileName"),
+    db: Session = Depends(get_db),
+):
+    image = db.query(ImageModel).filter(ImageModel.id == image_id).first()
+    storage = SFTPStorageClient()
+    remote_path = image.remote_path if image else cos_key
+    target_file_name = image.file_name if image else file_name
+
+    if remote_path:
+        try:
+            storage.delete_file(remote_path)
+        except RemoteStorageError as exc:
+            if "not found" not in str(exc).lower():
+                raise HTTPException(status_code=500, detail=str(exc))
+
+    if target_file_name and (not remote_path or posixpath.basename(remote_path) != target_file_name):
+        try:
+            storage.delete_file_by_name(target_file_name)
+        except RemoteStorageError as exc:
+            if "not found" not in str(exc).lower():
+                raise HTTPException(status_code=500, detail=str(exc))
+
+    if image:
+        db.delete(image)
+        db.commit()
+    return {"success": True}
+
+
 def load_image_bytes(image_id: int, db: Session) -> tuple[ImageModel, bytes]:
     """
     根据数据库 id 读取图片 bytes。
@@ -279,6 +329,72 @@ async def preview_cos_image(key: str = Query(..., description="COS object key"))
         content=image_bytes,
         media_type=mime_type,
         headers={"Content-Disposition": content_disposition("inline", file_name)},
+    )
+
+
+def thumbnail_cache_path(cos_key: str) -> Path:
+    digest = hashlib.sha256(cos_key.encode("utf-8")).hexdigest()
+    return THUMBNAIL_CACHE_DIR / f"{digest}.webp"
+
+
+def build_cover_thumbnail(image_bytes: bytes, size: tuple[int, int] = THUMBNAIL_SIZE) -> bytes:
+    target_width, target_height = size
+    target_ratio = target_width / target_height
+    with PILImage.open(io.BytesIO(image_bytes)) as image:
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGB")
+        elif image.mode == "RGBA":
+            background = PILImage.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.getchannel("A"))
+            image = background
+
+        source_width, source_height = image.size
+        source_ratio = source_width / source_height
+        if source_ratio > target_ratio:
+            crop_width = int(source_height * target_ratio)
+            left = max(0, (source_width - crop_width) // 2)
+            image = image.crop((left, 0, left + crop_width, source_height))
+        elif source_ratio < target_ratio:
+            crop_height = int(source_width / target_ratio)
+            top = max(0, (source_height - crop_height) // 2)
+            image = image.crop((0, top, source_width, top + crop_height))
+
+        image = image.resize(size, PILImage.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="WEBP", quality=78, method=4)
+        return output.getvalue()
+
+
+@router.get("/images/thumbnail")
+@router.get("/images/cos/thumbnail")
+async def thumbnail_cos_image(key: str = Query(..., description="COS object key")):
+    clean_key = validate_cos_key(key)
+    cache_path = thumbnail_cache_path(clean_key)
+    if cache_path.exists():
+        return Response(
+            content=cache_path.read_bytes(),
+            media_type="image/webp",
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "Content-Disposition": content_disposition("inline", f"{posixpath.basename(clean_key)}.webp"),
+            },
+        )
+    try:
+        image_bytes = SFTPStorageClient().download_bytes(clean_key)
+        thumbnail_bytes = build_cover_thumbnail(image_bytes)
+        THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(thumbnail_bytes)
+    except RemoteStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Thumbnail generation failed: {exc}") from exc
+    return Response(
+        content=thumbnail_bytes,
+        media_type="image/webp",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Disposition": content_disposition("inline", f"{posixpath.basename(clean_key)}.webp"),
+        },
     )
 
 

@@ -1,12 +1,30 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, Spin, Tag, Typography, message } from 'antd'
-import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, Spin, Typography, message } from 'antd'
+import { CopyOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { API_ORIGIN, getImageDownloadUrl, listImages, searchImages } from '../services/api'
-import ImageDetailDrawer from '../components/ImageDetailDrawer'
+import { getImageDownloadUrl, listImages, searchImages } from '../services/api'
+import { copyImageLink, getDownloadShareUrl, normalizeImageUrl } from '../utils/imageLinks'
 import './GalleryPage.css'
 
 const { Text } = Typography
+const shanghaiDateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
+const formatChinaTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return shanghaiDateFormatter.format(date).replace(/\//g, '-')
+}
+
 /**
  * 把后端返回的图片字段统一成图库卡片需要的结构。
  * 数据流：数据库记录 -> 前端展示模型；卡片标题用简洁标题，副标题用描述扩充，图片地址仍然走后端 preview/download 接口。
@@ -15,24 +33,26 @@ const normalizeGalleryImage = (image) => {
   const fileName = image.file_name || image.fileName || ''
   const title = image.prompt || image.title || image.description || fileName || image.cosKey || `image-${image.id}`
   const originalPrompt = image.originalPrompt || image.original_prompt || image.prompt || image.title || fileName.replace(/\.[^.]+$/, '') || ''
-  const expandedPrompt = image.expandedPrompt || image.expanded_prompt || image.description || ''
   const previewPath = image.previewUrl || image.preview_url || image.url || `/api/images/${image.id}/preview`
-  const previewUrl = previewPath.startsWith('http') ? previewPath : `${API_ORIGIN}${previewPath}`
+  const previewUrl = normalizeImageUrl(previewPath)
+  const thumbnailPath = image.thumbnailUrl || image.thumbnail_url || previewPath
+  const thumbnailUrl = normalizeImageUrl(thumbnailPath)
   const downloadPath = image.downloadUrl || image.download_url || getImageDownloadUrl(image.id)
-  const downloadUrl = downloadPath.startsWith('http') ? downloadPath : `${API_ORIGIN}${downloadPath}`
+  const downloadUrl = normalizeImageUrl(downloadPath)
 
   return {
     ...image,
     title,
     originalPrompt,
-    expandedPrompt,
-    description: expandedPrompt,
-    cardDescription: expandedPrompt || '-',
+    expandedPrompt: '',
+    description: '',
+    cardDescription: originalPrompt || '-',
     file_name: fileName,
     created_at: image.created_at || image.lastModified,
+    thumbnailUrl,
     previewUrl,
     downloadUrl,
-    keywordsText: Array.isArray(image.keywords) ? image.keywords.join(',') : image.keywords || '',
+    keywordsText: '',
   }
 }
 
@@ -41,15 +61,16 @@ const normalizeGalleryImage = (image) => {
  * 职责：
  * 1. 首次进入时调用 GET /api/images?sync_remote=true，把服务器目录里的图片同步进数据库并展示。
  * 2. 用户输入搜索词时调用 GET /api/images/search，只在数据库里按描述、文件名、prompt、keywords 即时筛选。
- * 3. 点击“刷新全部”时再次同步 SFTP 目录，保证公司服务器新增文件也能进入图片库。
+ * 3. 每次进入图片库时自动同步服务器目录，保证公司服务器新增文件也能进入图片库。
  */
-function GalleryPage() {
+function GalleryPage({ active = false }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [images, setImages] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [activeImage, setActiveImage] = useState(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewKey, setPreviewKey] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 12
   const debouncedSearchRef = useRef(null)
@@ -82,9 +103,11 @@ function GalleryPage() {
   }
 
   useEffect(() => {
-    // 首次进入图片库时同步一次服务器目录；之后搜索只查数据库，保证输入筛选速度更轻。
+    if (!active) return
+    setSearchQuery('')
+    debouncedSearchRef.current?.cancel?.()
     loadImages({ syncRemote: true })
-  }, [])
+  }, [active])
 
   useEffect(() => {
     debouncedSearchRef.current = createDebouncedFunction((query) => {
@@ -107,12 +130,6 @@ function GalleryPage() {
     loadImages({ query: searchQuery })
   }
 
-  const handleRefresh = () => {
-    setSearchQuery('')
-    debouncedSearchRef.current?.cancel?.()
-    loadImages({ syncRemote: true, showToast: true })
-  }
-
   const handleDownload = (image, event = null) => {
     event?.stopPropagation?.()
     const link = document.createElement('a')
@@ -121,14 +138,37 @@ function GalleryPage() {
     link.click()
   }
 
-  const openImageDrawer = (image) => {
-    setActiveImage(image)
-    setDrawerOpen(true)
+  const handleCopyLink = async (image, event = null) => {
+    event?.stopPropagation?.()
+    const link = getDownloadShareUrl(image)
+    if (!link) {
+      message.warning('请先上传图片后再复制下载链接')
+      return
+    }
+    try {
+      await copyImageLink(link)
+      message.success('已复制下载链接')
+    } catch {
+      message.error('复制失败，请手动复制')
+    }
+  }
+
+  const openImagePreview = (image) => {
+    setPreviewUrl(image.previewUrl)
+    setPreviewKey((key) => key + 1)
+    setPreviewOpen(true)
   }
 
   const paginatedImages = useMemo(
     () => images.slice((currentPage - 1) * pageSize, currentPage * pageSize),
     [images, currentPage]
+  )
+
+  const previewItems = useMemo(
+    () => (previewUrl
+      ? [previewUrl, ...images.map((image) => image.previewUrl).filter((url) => url && url !== previewUrl)]
+      : images.map((image) => image.previewUrl).filter(Boolean)),
+    [images, previewUrl]
   )
 
   return (
@@ -148,9 +188,6 @@ function GalleryPage() {
               />
               <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch} loading={loading}>
                 搜索
-              </Button>
-              <Button icon={<ReloadOutlined />} onClick={handleRefresh} disabled={loading}>
-                刷新全部
               </Button>
             </Space>
             <div className="gallery-count">
@@ -177,14 +214,16 @@ function GalleryPage() {
                   <Card
                     hoverable
                     className="image-card"
-                    onClick={() => openImageDrawer(image)}
+                    onClick={() => openImagePreview(image)}
                     cover={
                       <div className="image-wrapper">
                         <Image
-                          src={image.previewUrl}
+                          src={image.thumbnailUrl}
                           alt={image.title}
                           className="gallery-image"
-                          preview
+                          preview={false}
+                          loading="lazy"
+                          fallback={image.previewUrl}
                         />
                       </div>
                     }
@@ -197,26 +236,24 @@ function GalleryPage() {
                       >
                         下载
                       </Button>,
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={(event) => handleCopyLink(image, event)}
+                      >
+                        复制链接
+                      </Button>,
                     ]}
                   >
                     <Card.Meta
                       title={<div className="image-title" title={image.title}>{image.title}</div>}
                       description={
                         <Space direction="vertical" style={{ width: '100%' }} size="small">
-                          {image.keywordsText && (
-                            <div className="keywords-section">
-                              {image.keywordsText.split(',').filter(Boolean).map((keyword, idx) => (
-                                <Tag key={`${keyword}-${idx}`} color="blue">
-                                  {keyword.trim()}
-                                </Tag>
-                              ))}
-                            </div>
-                          )}
                           <Text type="secondary" className="gallery-description" title={image.cardDescription}>
                             {image.cardDescription}
                           </Text>
-                          <div className="image-time" title={new Date(image.created_at).toLocaleString()}>
-                            {image.created_at ? new Date(image.created_at).toLocaleString() : ''}
+                          <div className="image-time" title={formatChinaTime(image.created_at)}>
+                            {formatChinaTime(image.created_at)}
                           </div>
                         </Space>
                       }
@@ -242,17 +279,17 @@ function GalleryPage() {
           )}
         </Space>
       </Card>
-      <ImageDetailDrawer
-        open={drawerOpen}
-        image={activeImage}
-        row={activeImage ? {
-          originalPrompt: activeImage.originalPrompt,
-          description: activeImage.expandedPrompt || activeImage.description,
-          keywords: activeImage.keywordsText,
-          createdAt: activeImage.created_at,
-        } : null}
-        onClose={() => setDrawerOpen(false)}
-        onDownload={handleDownload}
+      <Image.PreviewGroup
+        key={previewKey}
+        items={previewItems}
+        preview={{
+          visible: previewOpen,
+          current: 0,
+          onVisibleChange: (visible) => {
+            setPreviewOpen(visible)
+            if (!visible) setPreviewUrl('')
+          },
+        }}
       />
     </div>
   )

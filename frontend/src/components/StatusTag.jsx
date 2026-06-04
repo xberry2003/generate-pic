@@ -5,9 +5,10 @@ import { Tag } from 'antd'
 // 表格任务状态的展示映射。这里不改变后端状态，只把前端内部状态翻译成用户可读的中文标签。
 const STATUS_META = {
   idle: { color: 'default', text: '未开始' },
-  waiting: { color: 'blue', text: '等待生成' },
+  editing: { color: 'processing', text: '输入中' },
+  waiting: { color: 'blue', text: '5 秒后自动生成' },
   generating: { color: 'orange', text: '生成中' },
-  generated: { color: 'cyan', text: '待上传' },
+  generated: { color: 'cyan', text: '已生成，待上传' },
   uploading: { color: 'purple', text: '上传中' },
   uploaded: { color: 'green', text: '已上传' },
   done: { color: 'green', text: '已完成' },
@@ -18,13 +19,16 @@ const STATUS_META = {
  * 状态标签组件
  * 职责：统一渲染表格里的任务状态，避免各列重复写颜色、文案和 loading 图标逻辑。
  */
-function StatusTag({ status }) {
+function StatusTag({ status, countdownSeconds = null }) {
   const meta = STATUS_META[status] || STATUS_META.idle
+  const text = status === 'waiting' && Number.isFinite(countdownSeconds)
+    ? `${Math.max(0, countdownSeconds)} 秒后自动生成`
+    : meta.text
 
   return (
     <Tag color={meta.color} className="status-tag">
       {(status === 'generating' || status === 'uploading') && <LoadingOutlined className="status-loading-icon" />}
-      {meta.text}
+      {text}
     </Tag>
   )
 }

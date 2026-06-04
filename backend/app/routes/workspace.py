@@ -6,8 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import WorkspaceRow
+from app.models import Image, WorkspaceRow
+from app.routes.images import build_thumbnail_url
 from app.services.auth_service import require_auth
+from app.services.remote_storage_service import RemoteStorageError, SFTPStorageClient
 
 router = APIRouter()
 
@@ -55,6 +57,7 @@ def keywords_to_text(keywords: str | list[str]) -> str:
 
 
 def row_to_dict(row: WorkspaceRow) -> dict[str, Any]:
+    thumbnail_url = build_thumbnail_url(row.cos_key or "")
     return {
         "id": row.id,
         "rowKey": row.row_key or f"draft-{row.id}",
@@ -67,6 +70,8 @@ def row_to_dict(row: WorkspaceRow) -> dict[str, Any]:
         "status": row.status or "idle",
         "uploaded": bool(row.uploaded),
         "cosKey": row.cos_key or "",
+        "thumbnailUrl": thumbnail_url,
+        "thumbnail_url": thumbnail_url,
         "previewUrl": row.preview_url or "",
         "downloadUrl": row.download_url or "",
         "dbId": row.image_db_id,
@@ -96,6 +101,19 @@ def apply_payload(row: WorkspaceRow, payload: WorkspaceRowPayload) -> WorkspaceR
     row.generated_at = parse_datetime(payload.generatedAt)
     row.updated_at = datetime.utcnow()
     return row
+
+
+def validate_delete_cos_key(storage: SFTPStorageClient, cos_key: str) -> str:
+    clean_key = (cos_key or "").strip().lstrip("/")
+    prefix = storage.config.get("cos_key_prefix", "").strip("/")
+    if not clean_key or ".." in clean_key.split("/"):
+        raise HTTPException(status_code=400, detail="无效的 COS 图片路径")
+    if prefix:
+        if clean_key == prefix or clean_key == f"{prefix}/":
+            raise HTTPException(status_code=400, detail="拒绝删除整个图片目录")
+        if not clean_key.startswith(f"{prefix}/"):
+            raise HTTPException(status_code=403, detail="COS 图片路径不在允许目录内")
+    return clean_key
 
 
 @router.get("/workspace/rows")
@@ -164,10 +182,47 @@ async def delete_workspace_row(
         .first()
     )
     if not row:
-        return {"success": True}
+        raise HTTPException(status_code=404, detail="Workspace row not found")
+
+    image = None
+    if row.image_db_id:
+        image = db.query(Image).filter(Image.id == row.image_db_id).first()
+    if not image and row.cos_key:
+        image = db.query(Image).filter(Image.remote_path == row.cos_key).first()
+
+    storage = SFTPStorageClient()
+    raw_cos_key = row.cos_key or (image.remote_path if image else "")
+    cos_key = ""
+    deleted_cos_object = False
+    cos_object_missing = False
+    if raw_cos_key:
+        cos_key = validate_delete_cos_key(storage, raw_cos_key)
+        try:
+            if storage.config.get("provider") == "cos" and not storage.cos_object_exists(cos_key):
+                cos_object_missing = True
+            else:
+                storage.delete_file(cos_key)
+                deleted_cos_object = True
+        except RemoteStorageError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"COS 图片删除失败，工作台记录未删除：{exc}",
+            ) from exc
+
+    deleted_image_record = False
+    if image:
+        db.delete(image)
+        deleted_image_record = True
     db.delete(row)
     db.commit()
-    return {"success": True}
+    return {
+        "success": True,
+        "deletedWorkspaceRow": True,
+        "deletedCosObject": deleted_cos_object,
+        "cosObjectMissing": cos_object_missing,
+        "deletedImageRecord": deleted_image_record,
+        "cosKey": cos_key,
+    }
 
 
 @router.post("/workspace/rows/bulk-save")

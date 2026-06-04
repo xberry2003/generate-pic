@@ -50,7 +50,7 @@ def get_minimax_config() -> MiniMaxConfig:
         endpoint=os.getenv("MINIMAX_IMAGE_ENDPOINT", "/v1/image_generation").strip(),
         timeout_seconds=int(os.getenv("MINIMAX_TIMEOUT_SECONDS", "180")),
         response_format=os.getenv("MINIMAX_RESPONSE_FORMAT", "base64").strip() or "base64",
-        aspect_ratio=os.getenv("MINIMAX_ASPECT_RATIO", "1:1").strip() or "1:1",
+        aspect_ratio=os.getenv("MINIMAX_ASPECT_RATIO", "16:9").strip() or "16:9",
         prompt_optimizer=os.getenv("MINIMAX_PROMPT_OPTIMIZER", "true").strip().lower() == "true",
         save_dir=os.getenv("MINIMAX_SAVE_DIR", "uploads/images").strip(),
     )
@@ -87,7 +87,7 @@ def build_minimax_payload(prompt: str, keywords: list[str], count: int, config: 
         "model": config.model,
         "prompt": final_prompt,
         "n": count,
-        "aspect_ratio": config.aspect_ratio,
+        "aspect_ratio": "16:9",
         "response_format": config.response_format,
         "prompt_optimizer": config.prompt_optimizer,
     }

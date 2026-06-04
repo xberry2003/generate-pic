@@ -7,52 +7,48 @@ import GalleryPage from './pages/GalleryPage'
 import LoginPage from './pages/LoginPage'
 import './App.css'
 
-/**
- * 主应用入口
- * 数据流说明：
- * - 默认展示新的多维表格工作台，用户可以在一张表里完成生成、搜索、上传、下载和详情查看。
- * - 经典生成页不再作为侧边栏入口展示；旧生成页路径进入时统一回到多维表格工作台。
- * - 页面切换只发生在前端状态 currentPage，不改变任何后端接口路径。
- */
-function App() {
-  const { authenticated, checkingAuth, logout, user } = useAuth()
+const DEV_BYPASS_AUTH = import.meta.env.DEV
 
-  const pageFromLocation = () => {
-    const route = `${window.location.pathname}${window.location.hash}`.toLowerCase()
-    if (route.includes('gallery')) return 'gallery'
+function routeFromLocation() {
+  const route = `${window.location.pathname}${window.location.hash}`.toLowerCase()
+  if (DEV_BYPASS_AUTH && (route.includes('login') || route.includes('register') || route.includes('forgot-password'))) {
+    window.history.replaceState(null, '', '/workspace')
     return 'batch'
   }
-
-  const redirectLegacyRoute = () => {
-    const route = `${window.location.pathname}${window.location.hash}`.toLowerCase()
-    if (route.includes('login')) return 'login'
-    if (/(classic|single|generator|generate)/.test(route)) {
-      window.history.replaceState(null, '', '/workspace')
-      return 'batch'
-    }
-    return pageFromLocation()
+  if (route.includes('register')) return 'register'
+  if (route.includes('forgot-password')) return 'forgot'
+  if (route.includes('login')) return 'login'
+  if (route.includes('gallery')) return 'gallery'
+  if (/(classic|single|generator|generate)/.test(route)) {
+    window.history.replaceState(null, '', '/workspace')
+    return 'batch'
   }
+  return 'batch'
+}
 
-  const [currentPage, setCurrentPage] = useState(redirectLegacyRoute)
+function App() {
+  const { authenticated, checkingAuth, logout, user } = useAuth()
+  const [currentPage, setCurrentPage] = useState(routeFromLocation)
 
   useEffect(() => {
-    const handlePopState = () => setCurrentPage(redirectLegacyRoute())
+    const handlePopState = () => setCurrentPage(routeFromLocation())
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
   }, [])
 
   useEffect(() => {
+    if (DEV_BYPASS_AUTH) return
     if (checkingAuth) return
-    const isLoginRoute = window.location.pathname.toLowerCase().includes('login')
-    if (!authenticated && !isLoginRoute) {
+    const authPages = ['login', 'register', 'forgot']
+    if (!authenticated && !authPages.includes(currentPage)) {
       window.history.replaceState(null, '', '/login')
       setCurrentPage('login')
     }
-    if (authenticated && isLoginRoute) {
+    if (authenticated && authPages.includes(currentPage)) {
       window.history.replaceState(null, '', '/workspace')
       setCurrentPage('batch')
     }
-  }, [authenticated, checkingAuth])
+  }, [authenticated, checkingAuth, currentPage])
 
   const menuItems = [
     {
@@ -70,29 +66,47 @@ function App() {
   const renderContent = () => {
     switch (currentPage) {
       case 'login':
-        return <LoginPage />
-      case 'batch':
-        return <BatchGenerateTablePage />
+        return <LoginPage mode="login" />
+      case 'register':
+        return <LoginPage mode="register" />
+      case 'forgot':
+        return <LoginPage mode="forgot" />
       case 'gallery':
         return <GalleryPage />
+      case 'batch':
       default:
         return <BatchGenerateTablePage />
     }
   }
 
+  const renderWorkspaceContent = () => (
+    <>
+      <div style={{ display: currentPage === 'batch' ? 'block' : 'none', height: '100%' }}>
+        <BatchGenerateTablePage active={currentPage === 'batch'} />
+      </div>
+      <div style={{ display: currentPage === 'gallery' ? 'block' : 'none', height: '100%' }}>
+        <GalleryPage active={currentPage === 'gallery'} />
+      </div>
+    </>
+  )
+
   const handleMenuClick = (event) => {
     const nextPage = event.key
-    window.history.pushState(null, '', nextPage === 'gallery' ? '/gallery' : '/workspace')
+    const pathMap = {
+      gallery: '/gallery',
+      batch: '/workspace',
+    }
+    window.history.pushState(null, '', pathMap[nextPage] || '/workspace')
     setCurrentPage(nextPage)
   }
 
   const handleLogout = async () => {
     await logout()
-    window.history.replaceState(null, '', '/login')
-    setCurrentPage('login')
+    window.history.replaceState(null, '', DEV_BYPASS_AUTH ? '/workspace' : '/login')
+    setCurrentPage(DEV_BYPASS_AUTH ? 'batch' : 'login')
   }
 
-  if (checkingAuth) {
+  if (!DEV_BYPASS_AUTH && checkingAuth) {
     return (
       <div className="app-auth-loading">
         <Spin tip="正在校验登录状态..." />
@@ -100,22 +114,22 @@ function App() {
     )
   }
 
-  if (!authenticated || currentPage === 'login') {
-    return <LoginPage />
+  if (!DEV_BYPASS_AUTH && (!authenticated || ['login', 'register', 'forgot'].includes(currentPage))) {
+    return renderContent()
   }
 
   return (
     <Layout className="app-shell">
       <Layout.Header className="app-header">
         <div className="app-brand">
-          <span className="brand-mark">GP</span>
+          <span className="brand-mark">AI</span>
           <div>
             <div className="brand-title">文生图图片工作台</div>
             <div className="brand-subtitle">多维表格式批量生成与图库管理</div>
           </div>
         </div>
         <div className="app-user">
-          <span>{user?.username || 'admin'}</span>
+          <span>{user?.name || user?.username || '员工'}</span>
           <Button size="small" icon={<LogoutOutlined />} onClick={handleLogout}>
             退出登录
           </Button>
@@ -133,7 +147,7 @@ function App() {
           />
         </Layout.Sider>
 
-        <Layout.Content className="app-content">{renderContent()}</Layout.Content>
+        <Layout.Content className="app-content">{renderWorkspaceContent()}</Layout.Content>
       </Layout>
     </Layout>
   )

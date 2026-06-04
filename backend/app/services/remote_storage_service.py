@@ -369,6 +369,48 @@ class SFTPStorageClient:
             with sftp.file(remote_path, "rb") as remote_file:
                 return remote_file.read()
 
+    def delete_file(self, remote_path: str) -> None:
+        clean_path = remote_path.strip().lstrip("/")
+        if not clean_path or ".." in clean_path.split("/"):
+            raise RemoteStorageError("Invalid remote path")
+
+        if self.config["provider"] == "cos":
+            try:
+                self.cos_client().delete_object(
+                    Bucket=self.config["cos_bucket"],
+                    Key=clean_path,
+                )
+                return
+            except (CosClientError, CosServiceError) as exc:
+                status_code = getattr(exc, "get_status_code", lambda: None)()
+                if status_code == 404:
+                    return
+                raise RemoteStorageError(f"COS delete failed for {clean_path}: {exc.__class__.__name__}: {exc}") from exc
+
+        remote_dir = self.config["remote_dir"].replace("\\", "/").rstrip("/")
+        target_path = remote_path.strip()
+        if not target_path.startswith(f"{remote_dir}/"):
+            raise RemoteStorageError("Remote path is outside image directory")
+        with self.connect() as sftp:
+            try:
+                sftp.remove(target_path)
+            except FileNotFoundError:
+                return
+            except IOError:
+                return
+
+    def delete_file_by_name(self, file_name: str) -> None:
+        safe_name = posixpath.basename((file_name or "").strip())
+        if not safe_name or ".." in safe_name.split("/"):
+            raise RemoteStorageError("Invalid file name")
+
+        if self.config["provider"] == "cos":
+            self.delete_file(self.cos_key_for(safe_name))
+            return
+
+        remote_dir = self.config["remote_dir"].replace("\\", "/").rstrip("/")
+        self.delete_file(posixpath.join(remote_dir, safe_name))
+
     def list_images(self) -> list[RemoteFileInfo]:
         """
         列举远程目录里的图片文件，用于 GET /api/images?sync_remote=true 同步数据库。

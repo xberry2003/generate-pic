@@ -75,6 +75,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     ensure_image_columns()
     ensure_workspace_row_columns()
+    ensure_api_usage_log_columns()
     print(f"Database initialized: {DATABASE_URL}")
 
 
@@ -142,3 +143,37 @@ def ensure_workspace_row_columns():
             if column_name not in existing:
                 connection.execute(text(f"ALTER TABLE workspace_rows ADD COLUMN {column_name} {column_type}"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_workspace_rows_user_id ON workspace_rows (user_id)"))
+
+
+def ensure_api_usage_log_columns():
+    """Keep older SQLite databases compatible after adding admin usage monitoring."""
+
+    if "sqlite" not in DATABASE_URL:
+        return
+
+    expected_columns = {
+        "user_id": "VARCHAR(255)",
+        "user_name": "VARCHAR(255)",
+        "user_role": "VARCHAR(50)",
+        "endpoint": "VARCHAR(100)",
+        "provider": "VARCHAR(50) DEFAULT 'minimax'",
+        "model": "VARCHAR(100)",
+        "prompt_chars": "INTEGER DEFAULT 0",
+        "requested_count": "INTEGER DEFAULT 0",
+        "generated_count": "INTEGER DEFAULT 0",
+        "status": "VARCHAR(50) DEFAULT 'success'",
+        "error_message": "TEXT",
+        "latency_ms": "INTEGER",
+        "created_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        tables = {row[0] for row in connection.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+        if "api_usage_logs" not in tables:
+            return
+        existing = {row[1] for row in connection.execute(text("PRAGMA table_info(api_usage_logs)"))}
+        for column_name, column_type in expected_columns.items():
+            if column_name not in existing:
+                connection.execute(text(f"ALTER TABLE api_usage_logs ADD COLUMN {column_name} {column_type}"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_usage_logs_user_id ON api_usage_logs (user_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_usage_logs_created_at ON api_usage_logs (created_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_usage_logs_status ON api_usage_logs (status)"))

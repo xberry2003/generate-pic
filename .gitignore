@@ -50,6 +50,7 @@ dist/
 # Logs
 logs/
 *.log
+*.pid
 
 # 上传文件（不追踪真实上传的文件）
 backend/uploads/*
@@ -67,6 +68,17 @@ backend/app/uploads/images/*
 .tmp/
 temp/
 tmp/
+tmp_*.html
+
+# Nested frontend build artifacts
+admin-frontend/node_modules/
+admin-frontend/dist/
+admin-frontend/.vite-admin/
+standalone-gallery/node_modules/
+standalone-gallery/dist/
+
+# Script caches
+scripts/__pycache__/
 
 # 编辑器备份文件
 *.bak

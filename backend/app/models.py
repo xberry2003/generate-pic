@@ -63,3 +63,24 @@ class WorkspaceRow(Base):
     generated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ApiUsageLog(Base):
+    """Per-request MiniMax image generation usage for admin monitoring."""
+
+    __tablename__ = "api_usage_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    user_name = Column(String(255), nullable=False, index=True)
+    user_role = Column(String(50), nullable=True)
+    endpoint = Column(String(100), nullable=False)
+    provider = Column(String(50), nullable=False, default="minimax")
+    model = Column(String(100), nullable=True)
+    prompt_chars = Column(Integer, default=0)
+    requested_count = Column(Integer, default=0)
+    generated_count = Column(Integer, default=0)
+    status = Column(String(50), nullable=False, default="success", index=True)
+    error_message = Column(Text, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

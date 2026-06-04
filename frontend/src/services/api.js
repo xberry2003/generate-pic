@@ -17,8 +17,29 @@ const apiClient = axios.create({
 export const API_BASE_URL = apiClient.defaults.baseURL
 export const API_ORIGIN = API_BASE_URL.startsWith('http') ? API_BASE_URL.replace(/\/api\/?$/, '') : ''
 
-export const login = async (username, password) => {
-  const response = await apiClient.post('/auth/login', { username, password })
+export const login = async (name, password) => {
+  const response = await apiClient.post('/verify-login', { name, password })
+  return response.data
+}
+
+export const registerEmployee = async ({ name, idCard, phone, password, confirmPassword }) => {
+  const response = await apiClient.post('/auth/register', {
+    name,
+    id_card: idCard,
+    phone,
+    password,
+    confirm_password: confirmPassword,
+  })
+  return response.data
+}
+
+export const resetPassword = async ({ name, idCard, password, confirmPassword }) => {
+  const response = await apiClient.post('/auth/reset-password', {
+    name,
+    id_card: idCard,
+    password,
+    confirm_password: confirmPassword,
+  })
   return response.data
 }
 
@@ -138,6 +159,16 @@ export const updateImageMetadata = async (imageId, { originalPrompt = '', expand
     console.error('更新图片详情失败:', error)
     throw error
   }
+}
+
+export const deleteImage = async (imageId, options = {}) => {
+  const response = await apiClient.delete(`/images/${imageId}`, {
+    params: {
+      cosKey: options.cosKey || '',
+      fileName: options.fileName || '',
+    },
+  })
+  return response.data
 }
 
 export const listWorkspaceRows = async () => {
