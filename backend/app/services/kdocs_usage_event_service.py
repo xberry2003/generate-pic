@@ -11,7 +11,7 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-async def report_minimax_usage_event(*, usage_count: int = 1, source: str = "minimax", remark: str = "") -> None:
+async def report_minimax_usage_event(*, usage_count: int = 1, source: str = "minimax", remark: str = "", user_name: str = "", user_id: str = "") -> None:
     if not _env_bool("KDOCS_USAGE_EVENTS_ENABLED", True):
         return
 
@@ -27,6 +27,8 @@ async def report_minimax_usage_event(*, usage_count: int = 1, source: str = "min
         "product_id": product_id,
         "usage_count": max(1, int(usage_count or 1)),
         "source": source,
+        "user_name": str(user_name or "").strip(),
+        "user_id": str(user_id or "").strip(),
         "remark": remark,
         "occurred_at": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
     }

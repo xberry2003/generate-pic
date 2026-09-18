@@ -1,16 +1,19 @@
 export const isTemporaryImageUrl = (url = '') => /^blob:|^data:/i.test(url)
 
 export const getApiBasePath = () => {
-  const configuredBase = import.meta.env.VITE_API_BASE_URL || '/api'
+  // Keep preview/download URLs on the same sub-path API as the workspace.
+  // The standalone gallery already uses /text2image/api; falling back to
+  // /api here would instead hit the host portal.
+  const configuredBase = import.meta.env.VITE_API_BASE_URL || '/text2image/api'
   if (/^https?:\/\//i.test(configuredBase)) {
     try {
       const parsed = new URL(configuredBase)
       return parsed.pathname.replace(/\/$/, '') || '/api'
     } catch {
-      return '/api'
+      return '/text2image/api'
     }
   }
-  return `/${String(configuredBase || '/api').replace(/^\/+|\/+$/g, '')}`
+  return `/${String(configuredBase || '/text2image/api').replace(/^\/+|\/+$/g, '')}`
 }
 
 export const normalizeImageUrl = (url = '') => {

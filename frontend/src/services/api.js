@@ -1,6 +1,9 @@
 import axios from 'axios'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
+// The workspace is mounted beneath /text2image/ in production.  Calling the
+// root /api would reach the host portal instead of this workspace's FastAPI
+// service, which leaves the login screen unable to initialize.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/text2image/api'
 
 // 创建 axios 实例，用于与后端 API 通信
 const apiClient = axios.create({
@@ -15,7 +18,7 @@ const apiClient = axios.create({
 })
 
 export const API_BASE_URL = apiClient.defaults.baseURL
-export const API_ORIGIN = API_BASE_URL.startsWith('http') ? API_BASE_URL.replace(/\/api\/?$/, '') : ''
+export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, '')
 
 export const login = async (name, password) => {
   const response = await apiClient.post('/verify-login', { name, password })
@@ -168,6 +171,11 @@ export const deleteImage = async (imageId, options = {}) => {
       fileName: options.fileName || '',
     },
   })
+  return response.data
+}
+
+export const renameImage = async (imageId, name) => {
+  const response = await apiClient.patch(`/images/${imageId}/name`, { name })
   return response.data
 }
 

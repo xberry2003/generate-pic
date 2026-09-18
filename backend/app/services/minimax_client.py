@@ -78,10 +78,32 @@ def normalize_keywords(keywords: str | list[str] | None) -> list[str]:
     return [item.strip() for item in str(keywords).replace("，", ",").split(",") if item.strip()]
 
 
+ASPECT_RATIO_TO_SIZE = {
+    "16:9": "1664*928",
+    "9:16": "928*1664",
+    "1:1": "1408*1408",
+    "4:3": "1472*1140",
+    "3:4": "1140*1472",
+}
+
+
 def build_minimax_payload(prompt: str, keywords: list[str], count: int, config: MiniMaxConfig) -> dict[str, Any]:
     final_prompt = prompt.strip()
     if keywords:
         final_prompt = f"{final_prompt}\n关键词：{', '.join(keywords)}"
+
+    # DashScope 原生接口（endpoint 以 /api/v1/ 开头）使用 multimodal-generation 请求格式
+    if config.endpoint.startswith("/api/v1/"):
+        size = ASPECT_RATIO_TO_SIZE.get(config.aspect_ratio, "1664*928")
+        return {
+            "model": config.model,
+            "input": {
+                "messages": [
+                    {"role": "user", "content": [{"text": final_prompt}]},
+                ],
+            },
+            "parameters": {"size": size, "n": count},
+        }
 
     return {
         "model": config.model,
@@ -160,6 +182,26 @@ def parse_minimax_response(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if status_code not in (None, 0, "0"):
             status_msg = base_resp.get("status_msg") or "unknown MiniMax provider error"
             raise MiniMaxClientError(f"MiniMax generation failed: {status_msg} (code: {status_code})")
+
+    # DashScope 原生响应：output.choices[].message.content[] 里带 image URL
+    if payload.get("code") and not payload.get("output"):
+        raise MiniMaxClientError(f"生图服务返回错误：{payload.get('message') or payload.get('code')}")
+
+    native_choices = get_nested(payload, ["output", "choices"])
+    if isinstance(native_choices, list) and native_choices:
+        content_items = []
+        for choice in native_choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                content_items.extend(content)
+            elif isinstance(content, str) and content:
+                content_items.append(content)
+        native_images = [normalized for item in content_items if (normalized := normalize_image_item(item))]
+        if native_images:
+            return native_images
 
     image_paths = [
         ["data", "image_base64"],

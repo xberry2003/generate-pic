@@ -8,6 +8,8 @@ FastAPI 搴旂敤閰嶇疆鍜屽垵濮嬪寲鏂囦欢
 4. 涓棿浠堕厤缃?
 """
 
+import asyncio
+import contextlib
 import os
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -16,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import init_db
 from app.routes import admin_usage, auth, generate, images, upload, storage, prompts, workspace
 from app.services.auth_service import require_auth
+from app.services.teamflow_usage_service import tracking_enabled, usage_retry_loop
 
 # 鍒涘缓 FastAPI 搴旂敤瀹炰緥
 app = FastAPI(
@@ -53,9 +56,9 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 # 娉ㄥ唽鍚勪釜妯″潡鐨勮矾鐢?
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 auth_required = [Depends(require_auth)]
-app.include_router(generate.router, prefix="/api", tags=["generation"], dependencies=auth_required)
-app.include_router(images.router, prefix="/api", tags=["images"], dependencies=auth_required)
-app.include_router(upload.router, prefix="/api", tags=["upload"], dependencies=auth_required)
+app.include_router(generate.router, prefix="/api", tags=["generation"])
+app.include_router(upload.router, prefix="/api", tags=["upload"])
+app.include_router(images.router, prefix="/api", tags=["images"])
 app.include_router(storage.router, prefix="/api", tags=["storage"], dependencies=auth_required)
 app.include_router(prompts.router, prefix="/api", tags=["prompts"], dependencies=auth_required)
 app.include_router(admin_usage.router, prefix="/api", tags=["admin"])
@@ -79,6 +82,8 @@ async def startup_event():
     """
     print("Application starting, initializing database...")
     init_db()
+    if tracking_enabled():
+        app.state.usage_retry_task = asyncio.create_task(usage_retry_loop())
     print("Database initialized")
 
 @app.on_event("shutdown")
@@ -86,6 +91,11 @@ async def shutdown_event():
     """
     搴旂敤鍏抽棴浜嬩欢
     """
+    task = getattr(app.state, "usage_retry_task", None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     print("Application shutdown")
 
 @app.get("/")

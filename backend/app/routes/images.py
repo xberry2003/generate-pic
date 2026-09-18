@@ -9,12 +9,13 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image as PILImage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Image as ImageModel
+from app.services.auth_service import require_admin, require_auth
 from app.services.image_generation_service import get_full_image_path
 from app.services.image_record_service import image_to_dict, sync_remote_files_to_db
 from app.services.remote_storage_service import RemoteStorageError, SFTPStorageClient, description_from_filename
@@ -31,6 +32,10 @@ class ImageMetadataUpdateRequest(BaseModel):
     originalPrompt: str = ""
     expandedPrompt: str = ""
     keywords: str | list[str] = ""
+
+
+class ImageRenameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
 
 
 def mime_type_for_filename(file_name: str) -> str:
@@ -220,6 +225,7 @@ async def search_images(
 async def update_image_metadata(
     image_id: int,
     request: ImageMetadataUpdateRequest,
+    user: dict = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     image = db.query(ImageModel).filter(ImageModel.id == image_id).first()
@@ -244,17 +250,65 @@ async def update_image_metadata(
     }
 
 
-@router.delete("/images/{image_id}")
-async def delete_image(
+@router.patch("/images/{image_id}/name")
+async def rename_image(
     image_id: int,
-    cos_key: str = Query("", alias="cosKey"),
-    file_name: str = Query("", alias="fileName"),
+    request: ImageRenameRequest,
+    user: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """Update the administrator-managed display name without moving the COS object."""
+
     image = db.query(ImageModel).filter(ImageModel.id == image_id).first()
+    if not image:
+        raise HTTPException(status_code=404, detail=f"Image {image_id} not found")
+
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="图片名称不能为空")
+
+    image.prompt = name
+    image.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(image)
+    return {
+        "success": True,
+        "message": "Image name updated",
+        "image": image_to_dict(image),
+    }
+
+
+@router.delete("/images/{image_id}")
+async def delete_image(
+    image_id: str,
+    cos_key: str = Query("", alias="cosKey"),
+    file_name: str = Query("", alias="fileName"),
+    user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete either a database-backed image or a storage-only gallery image.
+
+    Files discovered directly from COS do not always have an ``images`` table
+    row.  The gallery gives those files a temporary ``cos-<index>`` ID, so the
+    real storage key supplied by the gallery must be used in that case.
+    """
+    image = None
+    if image_id.isdigit():
+        image = db.query(ImageModel).filter(ImageModel.id == int(image_id)).first()
+
+    is_storage_only_image = image is None and image_id.startswith("cos-")
+    if image is None and not is_storage_only_image:
+        raise HTTPException(status_code=404, detail=f"Image {image_id} not found")
+
     storage = SFTPStorageClient()
-    remote_path = image.remote_path if image else cos_key
-    target_file_name = image.file_name if image else file_name
+    if image:
+        remote_path = image.remote_path
+        target_file_name = image.file_name
+    else:
+        # Never trust a temporary UI ID as a storage path.  The supplied key is
+        # validated against the configured gallery prefix before deletion.
+        remote_path = validate_cos_key(cos_key)
+        target_file_name = posixpath.basename(remote_path) or file_name
 
     if remote_path:
         try:

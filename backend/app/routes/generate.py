@@ -71,7 +71,6 @@ async def provider_health():
 @router.post("/generate", response_model=GenerateResponse)
 async def generate_image(
     request: GenerateRequest,
-    user: dict = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     """
@@ -94,7 +93,7 @@ async def generate_image(
         )
         record_generation_usage(
             db,
-            user=user,
+            user=None,
             endpoint="/api/generate",
             prompt=request.prompt,
             requested_count=request.count,
@@ -151,7 +150,7 @@ async def generate_image(
         print(f"Generation provider error: {exc}")
         record_generation_usage(
             db,
-            user=user,
+            user=None,
             endpoint="/api/generate",
             prompt=request.prompt,
             requested_count=request.count,
@@ -199,6 +198,8 @@ async def generate_image_draft(
         await report_minimax_usage_event(
             source="text2image",
             remark=f"/api/generate/draft success; generated={len(image_data_list)}",
+            user_name=str((user or {}).get("name") or ""),
+            user_id=str((user or {}).get("id") or ""),
         )
         images = []
         filename_description = (request.original_prompt or request.prompt).strip()
@@ -240,7 +241,11 @@ async def generate_image_draft(
 
 
 @router.post("/generate/upload", response_model=GenerateResponse)
-async def upload_generated_draft(request: UploadDraftRequest, db: Session = Depends(get_db)):
+async def upload_generated_draft(
+    request: UploadDraftRequest,
+    user: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
     try:
         if request.image_base64.startswith("data:image/"):
             image_base64 = request.image_base64.split(",", 1)[1]

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Alert, Button, Card, Form, Input, Typography } from 'antd'
 import { IdcardOutlined, LockOutlined, PhoneOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuth } from '../context/AuthContext'
+import { workspacePath } from '../utils/workspacePaths'
 import './LoginPage.css'
 
 const { Text, Title } = Typography
@@ -24,28 +25,28 @@ function navigateAfterLogin() {
     window.location.href = redirect
     return
   }
-  navigateTo('/workspace')
+  navigateTo(workspacePath('/workspace'))
 }
 
 function AuthLinks({ mode }) {
   if (mode === 'login') {
     return (
       <div className="login-links">
-        <button type="button" onClick={() => navigateTo('/register')}>没有密码？去注册</button>
-        <button type="button" onClick={() => navigateTo('/forgot-password')}>忘记密码？</button>
+        <button type="button" onClick={() => navigateTo(workspacePath('/register'))}>没有密码？去注册</button>
+        <button type="button" onClick={() => navigateTo(workspacePath('/forgot-password'))}>忘记密码？</button>
       </div>
     )
   }
   if (mode === 'register') {
     return (
       <div className="login-links">
-        <button type="button" onClick={() => navigateTo('/login')}>已有密码？去登录</button>
+        <button type="button" onClick={() => navigateTo(workspacePath('/login'))}>已有密码？去登录</button>
       </div>
     )
   }
   return (
     <div className="login-links">
-      <button type="button" onClick={() => navigateTo('/login')}>返回登录</button>
+      <button type="button" onClick={() => navigateTo(workspacePath('/login'))}>返回登录</button>
     </div>
   )
 }
@@ -72,7 +73,7 @@ function LoginPage({ mode = 'login' }) {
   const submitForgot = async (values) => {
     await forgotPassword(values)
     setSuccess('密码已重置，请重新登录')
-    setTimeout(() => navigateTo('/login'), 900)
+    setTimeout(() => navigateTo(workspacePath('/login')), 900)
   }
 
   const handleFinish = async (values) => {
@@ -82,7 +83,7 @@ function LoginPage({ mode = 'login' }) {
       setSuccess('')
       if (mode === 'register') {
         await submitRegister(values)
-        navigateTo('/workspace')
+        navigateTo(workspacePath('/workspace'))
         return
       }
       if (mode === 'forgot') {
@@ -95,7 +96,7 @@ function LoginPage({ mode = 'login' }) {
       const message = err?.response?.data?.message || err?.message || '操作失败'
       setError(message)
       if (err?.response?.data?.code === 'not_registered') {
-        setTimeout(() => navigateTo('/register'), 900)
+        setTimeout(() => navigateTo(workspacePath('/register')), 900)
       }
     } finally {
       setLoading(false)

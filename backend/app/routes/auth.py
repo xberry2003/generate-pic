@@ -57,6 +57,12 @@ def set_login_cookie(response: Response, user: dict):
     )
 
 
+def canonical_authenticated_user(user: dict) -> dict:
+    """Use the same server-derived role for login responses and later requests."""
+    username = str(user.get("username") or user.get("name") or "employee")
+    return user_payload(username, user)
+
+
 def employee_auth_error(response: Response, exc: EmployeeAuthError):
     response.status_code = status.HTTP_401_UNAUTHORIZED
     return {"success": False, "message": exc.message, "code": exc.code}
@@ -71,6 +77,7 @@ async def login(request: LoginRequest, response: Response):
         user = None
 
     if user:
+        user = canonical_authenticated_user(user)
         set_login_cookie(response, user)
         return {"success": True, "user": user}
 
@@ -89,6 +96,7 @@ async def verify_login(request: EmployeeLoginRequest, response: Response):
         user = verify_employee_login(request.name, request.password).to_public_dict()
     except EmployeeAuthError as exc:
         return employee_auth_error(response, exc)
+    user = canonical_authenticated_user(user)
     set_login_cookie(response, user)
     return {"success": True, "user": user}
 
@@ -105,6 +113,7 @@ async def register(request: RegisterRequest, response: Response):
         ).to_public_dict()
     except EmployeeAuthError as exc:
         return employee_auth_error(response, exc)
+    user = canonical_authenticated_user(user)
     set_login_cookie(response, user)
     return {"success": True, "user": user}
 

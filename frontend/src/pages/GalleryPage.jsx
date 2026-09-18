@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, Spin, Typography, message } from 'antd'
-import { CopyOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Col, Empty, Image, Input, Pagination, Row, Space, Spin, message, Modal, Tooltip } from 'antd'
+import { CopyOutlined, DownloadOutlined, SearchOutlined, DeleteOutlined, CheckOutlined, CloseOutlined, EditOutlined } from '@ant-design/icons'
 import { createDebouncedFunction } from '../services/debounce'
-import { getImageDownloadUrl, listImages, searchImages } from '../services/api'
-import { copyImageLink, getDownloadShareUrl, normalizeImageUrl } from '../utils/imageLinks'
+import { deleteImage, getImageDownloadUrl, listImages, renameImage, searchImages } from '../services/api'
+import { useAuth } from '../context/AuthContext'
+import { normalizeImageUrl } from '../utils/imageLinks'
+import { copyImageToClipboard } from '../utils/imageClipboard'
 import './GalleryPage.css'
 
-const { Text } = Typography
 const shanghaiDateFormatter = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
   year: 'numeric',
@@ -64,6 +65,8 @@ const normalizeGalleryImage = (image) => {
  * 3. 每次进入图片库时自动同步服务器目录，保证公司服务器新增文件也能进入图片库。
  */
 function GalleryPage({ active = false }) {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [searchQuery, setSearchQuery] = useState('')
   const [images, setImages] = useState([])
   const [loading, setLoading] = useState(false)
@@ -72,8 +75,14 @@ function GalleryPage({ active = false }) {
   const [previewUrl, setPreviewUrl] = useState('')
   const [previewKey, setPreviewKey] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
+  const [batchMode, setBatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState([])
+  const [renameTarget, setRenameTarget] = useState(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renaming, setRenaming] = useState(false)
   const pageSize = 12
   const debouncedSearchRef = useRef(null)
+  const toolbarRef = useRef(null)
 
   const setImageResponse = (response) => {
     setImages((response.images || []).map(normalizeGalleryImage))
@@ -138,18 +147,62 @@ function GalleryPage({ active = false }) {
     link.click()
   }
 
-  const handleCopyLink = async (image, event = null) => {
+  const handleCopyImage = async (image, event = null) => {
     event?.stopPropagation?.()
-    const link = getDownloadShareUrl(image)
-    if (!link) {
-      message.warning('请先上传图片后再复制下载链接')
+    const hideLoading = message.loading('正在复制图片', 0)
+    try {
+      await copyImageToClipboard(normalizeImageUrl(image.previewUrl || image.preview_url || image.url || image.downloadUrl || image.download_url || ''))
+      message.success('图片已复制，可直接粘贴到 PPT')
+    } catch (error) {
+      message.error(error.message || '复制图片失败，请查看控制台详细错误')
+    } finally {
+      hideLoading()
+    }
+  }
+
+  const toggleSelected = (imageId, event) => {
+    event?.stopPropagation?.()
+    setSelectedIds((ids) => ids.includes(imageId) ? ids.filter((id) => id !== imageId) : [...ids, imageId])
+  }
+
+  const removeImages = (items) => {
+    if (!items.length) return message.warning('请先选择图片')
+    Modal.confirm({ title: `确认删除 ${items.length} 张图片？`, content: '删除后无法恢复。', okText: '删除', okButtonProps: { danger: true }, cancelText: '取消', onOk: async () => {
+      await Promise.all(items.map((image) => deleteImage(image.id, { cosKey: image.cosKey, fileName: image.file_name })))
+      const ids = new Set(items.map((image) => image.id))
+      setImages((current) => current.filter((image) => !ids.has(image.id)))
+      setSelectedIds([])
+      message.success('图片已删除')
+    } }).catch(() => message.error('删除失败'))
+  }
+
+  const openRename = (image, event) => {
+    event?.stopPropagation?.()
+    setRenameTarget(image)
+    setRenameValue(image.title || '')
+  }
+
+  const handleRename = async () => {
+    const name = renameValue.trim()
+    if (!name) {
+      message.warning('请输入图片名称')
       return
     }
+    if (!renameTarget) return
     try {
-      await copyImageLink(link)
-      message.success('已复制下载链接')
-    } catch {
-      message.error('复制失败，请手动复制')
+      setRenaming(true)
+      const response = await renameImage(renameTarget.id, name)
+      setImages((current) => current.map((image) => (
+        image.id === renameTarget.id
+          ? normalizeGalleryImage({ ...image, ...(response.image || {}), title: name })
+          : image
+      )))
+      setRenameTarget(null)
+      message.success('图片名称已更新')
+    } catch (err) {
+      message.error(err?.response?.data?.detail || err.message || '修改名称失败')
+    } finally {
+      setRenaming(false)
     }
   }
 
@@ -164,6 +217,15 @@ function GalleryPage({ active = false }) {
     [images, currentPage]
   )
 
+  const handlePageChange = (page) => {
+    setCurrentPage(page)
+    // scrollIntoView follows the actual scrolling ancestor, which is more
+    // reliable than guessing between the app shell and browser document.
+    requestAnimationFrame(() => {
+      toolbarRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    })
+  }
+
   const previewItems = useMemo(
     () => (previewUrl
       ? [previewUrl, ...images.map((image) => image.previewUrl).filter((url) => url && url !== previewUrl)]
@@ -175,8 +237,9 @@ function GalleryPage({ active = false }) {
     <div className="gallery-page">
       <Card className="gallery-card" styles={{ body: { padding: 28 } }}>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          <div className="search-section">
+          <div ref={toolbarRef} className="search-section gallery-toolbar">
             <Space wrap>
+              {isAdmin && (!batchMode ? <Button danger icon={<CheckOutlined />} onClick={() => setBatchMode(true)}>批量操作</Button> : <><Button danger icon={<DeleteOutlined />} disabled={!selectedIds.length} onClick={() => removeImages(images.filter((image) => selectedIds.includes(image.id)))}>删除</Button><Button icon={<DownloadOutlined />} disabled={!selectedIds.length} onClick={() => selectedIds.forEach((id) => handleDownload(images.find((image) => image.id === id)))}>下载</Button><Button icon={<CloseOutlined />} onClick={() => { setBatchMode(false); setSelectedIds([]) }}>取消</Button></>)}
               <Input
                 allowClear
                 prefix={<SearchOutlined />}
@@ -214,7 +277,7 @@ function GalleryPage({ active = false }) {
                   <Card
                     hoverable
                     className="image-card"
-                    onClick={() => openImagePreview(image)}
+                    onClick={(event) => batchMode ? toggleSelected(image.id, event) : openImagePreview(image)}
                     cover={
                       <div className="image-wrapper">
                         <Image
@@ -228,35 +291,26 @@ function GalleryPage({ active = false }) {
                       </div>
                     }
                     actions={[
-                      <Button
-                        type="primary"
-                        size="small"
-                        icon={<DownloadOutlined />}
-                        onClick={(event) => handleDownload(image, event)}
-                      >
-                        下载
-                      </Button>,
-                      <Button
-                        size="small"
-                        icon={<CopyOutlined />}
-                        onClick={(event) => handleCopyLink(image, event)}
-                      >
-                        复制链接
-                      </Button>,
+                      <Tooltip title="下载" key="download">
+                        <Button type="primary" size="small" icon={<DownloadOutlined />} onClick={(event) => handleDownload(image, event)} aria-label="下载" />
+                      </Tooltip>,
+                      <Tooltip title="复制图片" key="copy">
+                        <Button size="small" icon={<CopyOutlined />} onClick={(event) => handleCopyImage(image, event)} aria-label="复制图片" />
+                      </Tooltip>,
+                      ...(isAdmin ? [
+                        <Tooltip title="修改名称" key="rename">
+                          <Button size="small" icon={<EditOutlined />} onClick={(event) => openRename(image, event)} aria-label="修改名称" />
+                        </Tooltip>,
+                        <Tooltip title="删除" key="delete">
+                          <Button danger size="small" icon={<DeleteOutlined />} onClick={(event) => { event.stopPropagation(); removeImages([image]) }} aria-label="删除" />
+                        </Tooltip>,
+                      ] : []),
                     ]}
                   >
+                    {isAdmin && batchMode && <button type="button" className={`image-select ${selectedIds.includes(image.id) ? 'selected' : ''}`} onClick={(event) => toggleSelected(image.id, event)} aria-label="选择图片">{selectedIds.includes(image.id) && <CheckOutlined />}</button>}
                     <Card.Meta
                       title={<div className="image-title" title={image.title}>{image.title}</div>}
-                      description={
-                        <Space direction="vertical" style={{ width: '100%' }} size="small">
-                          <Text type="secondary" className="gallery-description" title={image.cardDescription}>
-                            {image.cardDescription}
-                          </Text>
-                          <div className="image-time" title={formatChinaTime(image.created_at)}>
-                            {formatChinaTime(image.created_at)}
-                          </div>
-                        </Space>
-                      }
+                      description={<div className="image-time" title={formatChinaTime(image.created_at)}>{formatChinaTime(image.created_at)}</div>}
                     />
                   </Card>
                 </Col>
@@ -272,7 +326,7 @@ function GalleryPage({ active = false }) {
                 current={currentPage}
                 pageSize={pageSize}
                 total={images.length}
-                onChange={setCurrentPage}
+                onChange={handlePageChange}
                 showSizeChanger={false}
               />
             </div>
@@ -291,6 +345,25 @@ function GalleryPage({ active = false }) {
           },
         }}
       />
+      <Modal
+        title="修改图片名称"
+        open={Boolean(renameTarget)}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={renaming}
+        onOk={handleRename}
+        onCancel={() => !renaming && setRenameTarget(null)}
+        destroyOnClose
+      >
+        <Input
+          autoFocus
+          maxLength={200}
+          value={renameValue}
+          onChange={(event) => setRenameValue(event.target.value)}
+          onPressEnter={handleRename}
+          placeholder="请输入图片名称"
+        />
+      </Modal>
     </div>
   )
 }

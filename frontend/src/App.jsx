@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import BatchGenerateTablePage from './pages/BatchGenerateTablePage'
 import GalleryPage from './pages/GalleryPage'
 import LoginPage from './pages/LoginPage'
+import { workspacePath } from './utils/workspacePaths'
 import './App.css'
 
 const DEV_BYPASS_AUTH = import.meta.env.DEV
@@ -12,7 +13,7 @@ const DEV_BYPASS_AUTH = import.meta.env.DEV
 function routeFromLocation() {
   const route = `${window.location.pathname}${window.location.hash}`.toLowerCase()
   if (DEV_BYPASS_AUTH && (route.includes('login') || route.includes('register') || route.includes('forgot-password'))) {
-    window.history.replaceState(null, '', '/workspace')
+    window.history.replaceState(null, '', workspacePath('/workspace'))
     return 'batch'
   }
   if (route.includes('register')) return 'register'
@@ -20,7 +21,7 @@ function routeFromLocation() {
   if (route.includes('login')) return 'login'
   if (route.includes('gallery')) return 'gallery'
   if (/(classic|single|generator|generate)/.test(route)) {
-    window.history.replaceState(null, '', '/workspace')
+    window.history.replaceState(null, '', workspacePath('/workspace'))
     return 'batch'
   }
   return 'batch'
@@ -41,11 +42,11 @@ function App() {
     if (checkingAuth) return
     const authPages = ['login', 'register', 'forgot']
     if (!authenticated && !authPages.includes(currentPage)) {
-      window.history.replaceState(null, '', '/login')
+      window.history.replaceState(null, '', workspacePath('/login'))
       setCurrentPage('login')
     }
     if (authenticated && authPages.includes(currentPage)) {
-      window.history.replaceState(null, '', '/workspace')
+      window.history.replaceState(null, '', workspacePath('/workspace'))
       setCurrentPage('batch')
     }
   }, [authenticated, checkingAuth, currentPage])
@@ -93,16 +94,22 @@ function App() {
   const handleMenuClick = (event) => {
     const nextPage = event.key
     const pathMap = {
-      gallery: '/gallery',
-      batch: '/workspace',
+      gallery: workspacePath('/gallery'),
+      batch: workspacePath('/workspace'),
     }
-    window.history.pushState(null, '', pathMap[nextPage] || '/workspace')
+    window.history.pushState(null, '', pathMap[nextPage] || workspacePath('/workspace'))
     setCurrentPage(nextPage)
+    // Keep page navigation predictable: switching from a long workspace or a
+    // later gallery page must always reveal the top of the next view.
+    requestAnimationFrame(() => {
+      document.querySelector('.app-content')?.scrollTo({ top: 0, behavior: 'smooth' })
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    })
   }
 
   const handleLogout = async () => {
     await logout()
-    window.history.replaceState(null, '', DEV_BYPASS_AUTH ? '/workspace' : '/login')
+    window.history.replaceState(null, '', DEV_BYPASS_AUTH ? workspacePath('/workspace') : workspacePath('/login'))
     setCurrentPage(DEV_BYPASS_AUTH ? 'batch' : 'login')
   }
 

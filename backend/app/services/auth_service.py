@@ -32,11 +32,25 @@ def session_secret() -> str:
 
 
 def user_payload(username: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"username": username, "name": username, "role": "admin"}
+    # Never trust a role carried in a session payload.  The effective role is
+    # always derived from server-side configuration after the name is resolved.
+    # This keeps a normal employee session from acquiring admin permissions if
+    # an older cookie happened to contain a role field.
+    admin_names = {
+        item.strip()
+        for item in os.getenv("ADMIN_EMPLOYEE_NAMES", "谢茹羽").split(",")
+        if item.strip()
+    }
+    admin_username, _ = admin_credentials()
+    admin_names.add(admin_username)
+    payload: dict[str, Any] = {"username": username, "name": username}
     if extra:
         payload.update(extra)
         payload["username"] = str(payload.get("username") or payload.get("name") or username)
         payload["name"] = str(payload.get("name") or payload.get("username") or username)
+    payload["role"] = "admin" if (
+        payload["name"] in admin_names or payload["username"] in admin_names
+    ) else "employee"
     return payload
 
 
@@ -112,4 +126,11 @@ def require_auth(request: Request) -> dict[str, Any]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"message": "未登录或登录已过期"},
         )
+    return user
+
+
+def require_admin(request: Request) -> dict[str, Any]:
+    user = require_auth(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"message": "仅管理员可执行此操作"})
     return user

@@ -25,6 +25,37 @@ export const searchImages = async (query = '') => {
   return response.data
 }
 
+export const getCurrentUser = async () => {
+  const response = await apiClient.get('/auth/me')
+  return response.data
+}
+
 export const getImageDownloadUrl = (imageId) => `${API_BASE}/images/${imageId}/download`
+
+export const deleteImage = async (imageId, options = {}) => {
+  const response = await apiClient.delete(`/images/${imageId}`, {
+    params: {
+      cosKey: options.cosKey || '',
+      fileName: options.fileName || '',
+    },
+  })
+  return response.data
+}
+
+export const renameImage = async (imageId, name) => {
+  const response = await apiClient.patch(`/images/${imageId}/name`, { name })
+  return response.data
+}
+
+export const uploadGalleryImage = async (file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await apiClient.post('/gallery/images/upload', formData, {
+    headers: {
+      'Content-Type': undefined,
+    },
+  })
+  return response.data
+}
 
 export default apiClient

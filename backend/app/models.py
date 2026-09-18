@@ -84,3 +84,24 @@ class ApiUsageLog(Base):
     error_message = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TeamflowUsageEvent(Base):
+    """Durable outbox for successful image-library actions."""
+
+    __tablename__ = "teamflow_usage_events"
+
+    event_id = Column(String(255), primary_key=True)
+    product_id = Column(Integer, nullable=False)
+    usage_count = Column(Integer, nullable=False, default=1)
+    source = Column(String(100), nullable=False)
+    user_id = Column(String(255), nullable=True)
+    user_name = Column(String(255), nullable=True)
+    remark = Column(Text, nullable=True)
+    occurred_at = Column(DateTime, nullable=False)
+    delivery_status = Column(String(50), nullable=False, default="pending", index=True)
+    delivery_attempts = Column(Integer, nullable=False, default=0)
+    delivered_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
