@@ -14,6 +14,7 @@ class Image(Base):
     __tablename__ = "images"
 
     id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(200), nullable=True)
     prompt = Column(String(500), nullable=False, default="")
     keywords = Column(String(255), nullable=True)
     description = Column(Text, nullable=True)
@@ -47,6 +48,7 @@ class WorkspaceRow(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String(255), nullable=False, index=True)
     row_key = Column(String(255), nullable=True)
+    title = Column(String(200), nullable=True)
     original_prompt = Column(Text, nullable=True)
     expanded_prompt = Column(Text, nullable=True)
     expanded_prompt_touched = Column(Integer, default=0)

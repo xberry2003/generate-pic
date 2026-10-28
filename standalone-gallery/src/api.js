@@ -42,8 +42,8 @@ export const deleteImage = async (imageId, options = {}) => {
   return response.data
 }
 
-export const renameImage = async (imageId, name) => {
-  const response = await apiClient.patch(`/images/${imageId}/name`, { name })
+export const renameImage = async (imageId, name, cosKey = '') => {
+  const response = await apiClient.patch(`/images/${imageId}/name`, { name, cosKey })
   return response.data
 }
 

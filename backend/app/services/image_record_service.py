@@ -17,7 +17,8 @@ def image_to_dict(image: ImageModel) -> dict:
     download_url = image.download_url or f"/api/images/{image.id}/download"
     return {
         "id": image.id,
-        "title": image.prompt or image.description or image.file_name or f"image-{image.id}",
+        "title": (image.title or "").strip() or image.prompt or image.description or image.file_name or f"image-{image.id}",
+        "customTitle": image.title or "",
         "prompt": image.prompt or "",
         "originalPrompt": image.prompt or "",
         "original_prompt": image.prompt or "",
@@ -56,10 +57,12 @@ def create_image_record(
     remote_info: RemoteFileInfo,
     source: str,
     status: str = "done",
+    title: str = "",
 ) -> ImageModel:
     """生成/上传成功后写入数据库，并返回可序列化的 Image 模型。"""
 
     image = ImageModel(
+        title=title.strip(),
         prompt=prompt or description or remote_info.file_name,
         description=description or prompt or remote_info.file_name,
         keywords=keywords or "",

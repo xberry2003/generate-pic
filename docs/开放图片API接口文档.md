@@ -1,52 +1,226 @@
 # 开放图片 API 接口文档
 
-本文档整理当前项目对外可直接调用的图片能力。以下接口不需要登录、不需要 Cookie，也不需要 `Authorization` 请求头。
+更新时间：2026-10-22（北京时间）
+适用版本：当前线上文生图项目；已核对服务器的路由、鉴权、存储及图片序列化实现。
 
-## 基础信息
+本文说明对外开放的生成、上传、读取、搜索、预览及下载能力，并附录需要登录的生成预览与管理接口。示例中的图片 ID、文件名、COS key 和返回数量均为示意值，不表示线上真实数据。
 
-- API 前缀：`/api`
-- API 访问地址：`http://43.142.31.198:9876/api`
-- 返回格式：JSON；图片预览/下载接口返回图片二进制
-- 上传格式：`multipart/form-data`
-- 创建图片格式：`application/json`
+## 1. 基础信息
 
-> 注意：响应里的 `previewUrl`、`thumbnailUrl`、`downloadUrl` 通常是相对路径。外部系统使用时需要拼接服务域名，例如 `http://43.142.31.198:9876`。
+| 项目 | 值 |
+| --- | --- |
+| 推荐 API 基础地址 | `https://tongjixinzhi.cn/text2image/api` |
+| 应用内部路由前缀 | `/api`；线上 Nginx 将 `/text2image/api/` 转发到该前缀 |
+| 独立图片库 | `https://tongjixinzhi.cn/gallery/` |
+| 工作台内嵌图片库 | `https://tongjixinzhi.cn/text2image/gallery`，嵌入同一个独立图片库页面 |
+| 请求格式 | 生成使用 `application/json`；文件上传使用 `multipart/form-data` |
+| 响应格式 | 业务接口返回 JSON；预览、缩略图及下载接口返回图片二进制 |
+| 字符编码 | JSON、中文文件名和请求参数使用 UTF-8 |
 
-## 1. 图片库上传
+下文路径均相对于推荐 API 基础地址。例如 `POST /generate` 的完整地址为 `https://tongjixinzhi.cn/text2image/api/generate`。旧文档使用的 IP 与 9876 端口不再作为推荐接入地址，本次未验证该端口的公网可达性。
 
-上传本地图片到图片库，后端会校验图片类型和大小，转换为 PNG 后上传到远程存储，并写入图片库记录。
+### 1.1 接口与权限总览
+
+| 方法 | 路径 | 权限 | 用途 |
+| --- | --- | --- | --- |
+| POST | `/generate` | 免登录 | 生成图片并保存图片记录 |
+| POST | `/images/upload` | 免登录 | 手动提供描述并上传本地图片 |
+| POST | `/gallery/images/upload` | 免登录 | 上传本地图片，由服务分析标题和描述 |
+| GET | `/images` | 免登录 | 返回完整 COS 图片列表及关联 metadata |
+| GET | `/images/search` | 免登录 | 搜索及分页读取 |
+| GET | `/images/thumbnail` | 免登录 | 按 COS key 读取缩略图 |
+| GET | `/images/preview` | 免登录 | 按 COS key 预览原图 |
+| GET | `/images/download` | 免登录 | 按 COS key 下载原图 |
+| GET | `/images/{image_id}/preview` | 免登录 | 按数据库数字 ID 预览 |
+| GET | `/images/{image_id}/download` | 免登录 | 按数据库数字 ID 下载 |
+| GET | `/generate/provider-health` | 免登录 | 查看生成服务配置状态 |
+| POST | `/generate/draft` | 已登录用户 | 生成临时预览，不上传入库 |
+| POST | `/generate/upload` | 已登录用户 | 将生成预览的 Base64 数据上传入库 |
+| PATCH | `/images/{image_id}/metadata` | 已登录用户 | 更新标题、描述和关键词 |
+| PATCH | `/images/{image_id}/name` | 管理员 | 修改显示标题 |
+| DELETE | `/images/{image_id}` | 管理员 | 删除图片记录及对应存储对象 |
+
+免登录接口不要求 Cookie 或 `Authorization`。鉴权接口使用服务端登录会话 Cookie，当前实现没有对外定义 API Key 或 Bearer Token 鉴权方式。
+
+### 1.2 图片 URL 的正确拼接
+
+响应中的 `previewUrl`、`thumbnailUrl`、`downloadUrl` 及下划线命名的对应字段通常以 `/api/` 开头。使用 HTTPS 子路径接入时，必须把该前缀转换为 `/text2image/api/`，不能直接拼接成 `https://tongjixinzhi.cn/api/...`。
+
+```javascript
+const origin = 'https://tongjixinzhi.cn'
+
+function resolveImageUrl(value) {
+  if (!value) return ''
+  if (/^(https?:|data:|blob:)/i.test(value)) return value
+  const path = value.startsWith('/') ? value : `/${value}`
+  return new URL(
+    path.startsWith('/api/') ? `/text2image${path}` : path,
+    origin,
+  ).href
+}
+
+// /api/images/123/preview
+// → https://tongjixinzhi.cn/text2image/api/images/123/preview
+```
+
+`data:`/`blob:` 是临时前端资源，不是可分享的持久化下载链接。返回本地回退路径时，需按该路径对应的部署映射处理。
+
+## 2. 图片对象与标题规则
+
+### 2.1 常用字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | integer 或 string | 数据库图片为数字 ID；只有 COS 对象、没有数据库记录时为临时 `cos-<index>` |
+| `title` | string | 最终显示标题；调用方应优先使用这个字段 |
+| `customTitle` | string | 独立保存的手动标题，未填写时为空；只有 COS 对象时可能不返回该字段 |
+| `prompt` | string | 持久化图片的原始描述；生成接口有 `original_prompt` 时优先保存它 |
+| `originalPrompt` / `original_prompt` | string | 持久化图片原始描述的兼容命名 |
+| `description` | string | 图片描述，具体写入规则因上传方式而异 |
+| `expandedPrompt` / `expanded_prompt` | string | `description` 的兼容命名，不保证是 AI 扩写结果 |
+| `keywords` | string | 关键词；输入数组会转换为逗号分隔字符串 |
+| `fileName` / `file_name` | string | 实际存储文件名，以返回值为准 |
+| `cosKey` / `remote_path` | string | 存储对象完整 key，包含目录前缀 |
+| `previewUrl` / `preview_url` / `url` | string | 原图预览地址 |
+| `downloadUrl` / `download_url` | string | 原图下载地址 |
+| `thumbnailUrl` / `thumbnail_url` | string | COS 列表和搜索响应提供；生成或上传响应不保证包含 |
+| `mime_type` | string | 声明的图片 MIME 类型 |
+| `size` / `file_size` | integer | 图片文件大小，单位字节 |
+| `created_at` | string 或 null | 创建时间；生成和上传响应还提供 `createdAt` 别名 |
+| `updated_at` | string 或 null | 更新时间 |
+| `lastModified` | string 或 null | COS 列表中的对象修改时间 |
+| `storage_provider` | string | 存储提供者，例如 `cos` |
+| `source` | string | 来源，例如 `generated`、`uploaded`、`cos`、`remote` |
+| `status` | string | 图片记录状态，例如 `done` |
+
+时间字符串可能没有时区后缀，不能把所有时间字段一概视为已转换到北京时间。列表中的 `created_at` 和 COS 的 `lastModified` 也不是同一个语义。
+
+临时 `cos-<index>` 只用于当前列表展示，不是稳定数据库 ID。此类图片请使用返回的 `cosKey` 及 key 形式的预览、下载接口，不要传入数字 ID 接口。
+
+### 2.2 标题优先级
+
+数据库图片的显示规则为：
+
+```text
+去掉首尾空白后的手动 title
+  → 原始描述 prompt
+  → description
+  → 文件名
+```
+
+- 生成请求新增可选 `title`，最多 200 个字符。
+- 留空或只有空格时，持久化图片以原始描述作为标题。
+- `title` 不参与文生图提示词，也不用于替换原始描述。
+- `title` 不决定存储文件名；生成文件名仍使用 `original_prompt`，未提供时使用 `prompt`。
+- 图片库搜索包含 `title`。
+- **两个 multipart 上传接口当前都不接收手动 `title` 参数。** `/images/upload` 使用输入描述作为显示标题；`/gallery/images/upload` 使用分析结果。需另设标题时，可在登录后调用 metadata 或管理员改名接口。
+
+## 3. 免登录创建图片
 
 ```http
-POST /api/images/upload
+POST /generate
+Content-Type: application/json
+```
+
+根据提示词生成图片，转换为 PNG 字节后上传远程存储并保存数据库记录。
+
+| Body 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `prompt` | string | 是 | — | 实际生成提示词，不能是空字符串或只有空白 |
+| `title` | string | 否 | `""` | 手动显示标题，最长 200 字符 |
+| `original_prompt` | string | 否 | `""` | 原始描述；用于持久化 `prompt` 和生成文件名；未提供时使用 `prompt` |
+| `description` | string | 否 | `""` | 补充描述；空字符串时使用 `prompt` |
+| `keywords` | string 或 string[] | 否 | `""` | 关键词 |
+| `count` | integer | 否 | `1` | 生成数量，范围 1–4 |
+
+```bash
+curl -X POST 'https://tongjixinzhi.cn/text2image/api/generate' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "一间复古风格厨房，黑白棋盘格地面，窗边有绿色植物，真实摄影",
+    "title": "复古厨房",
+    "original_prompt": "复古风格厨房 黑白棋盘格",
+    "description": "复古风格厨房 黑白棋盘格",
+    "keywords": ["厨房", "复古", "室内"],
+    "count": 1
+  }'
+```
+
+响应示例（节选）：
+
+```json
+{
+  "message": "Generation succeeded",
+  "success": true,
+  "images": [
+    {
+      "id": 124,
+      "title": "复古厨房",
+      "customTitle": "复古厨房",
+      "prompt": "复古风格厨房 黑白棋盘格",
+      "originalPrompt": "复古风格厨房 黑白棋盘格",
+      "description": "复古风格厨房 黑白棋盘格",
+      "keywords": "厨房,复古,室内",
+      "fileName": "复古风格厨房黑白棋盘格.png",
+      "cosKey": "ppt-素材/图片素材/复古风格厨房黑白棋盘格.png",
+      "previewUrl": "/api/images/124/preview",
+      "downloadUrl": "/api/images/124/download",
+      "mime_type": "image/png",
+      "source": "generated",
+      "status": "done"
+    }
+  ]
+}
+```
+
+接口是同步请求，没有返回后台任务 ID 或轮询任务状态的协议。远程上传失败时，该接口有本地保存回退逻辑：仍可能返回成功和图片记录，但 `cosKey` 为空；COS 图片列表不保证出现该本地回退图片。外部系统应检查返回路径和 `cosKey`。
+
+## 4. 免登录上传图片
+
+### 4.1 手动描述上传
+
+```http
+POST /images/upload
 Content-Type: multipart/form-data
 ```
 
-### Form 参数
-
-| 参数 | 类型 | 必填 | 说明 |
+| Form 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `file` | file | 是 | 图片文件，支持 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp` |
-| `prompt` | string | 否 | 图片原始描述；用于展示和生成规范文件名 |
-| `keywords` | string | 否 | 关键词，多个关键词可用逗号分隔 |
-| `description` | string | 否 | 图片补充描述 |
+| `file` | file | 是 | 图片文件，支持 `.png`、`.jpg`、`.jpeg`、`.webp` |
+| `prompt` | string | 条件必填 | 原始描述；与 `description` 至少一个包含非空白文字 |
+| `description` | string | 条件必填 | `prompt` 留空时作为显示描述及文件名依据 |
+| `keywords` | string | 否 | 逗号分隔关键词 |
 
-限制：
+限制：文件不能为空；大小最多 `50 × 1024 × 1024` 字节（52,428,800 字节）。**当前后端不支持 GIF 上传**，即使某些前端文件选择器仍允许选择 GIF。
 
-- 文件不能为空
-- 文件大小不能超过 50MB
-- `prompt` 和 `description` 至少建议填写一个，否则无法生成规范中文文件名
-
-### cURL 示例
+`prompt` 与 `description` 并不是“建议填写”，而是至少一个必需有非空白内容。该接口保存的 `description` 优先使用 `prompt.trim()`，否则使用 `description.trim()`；当 `prompt` 有值时，不会把额外输入的 `description` 原样存为补充描述。
 
 ```bash
-curl -X POST "http://43.142.31.198:9876/api/images/upload" \
-  -F "file=@/path/to/image.png" \
-  -F "prompt=阳光书房音乐角" \
-  -F "keywords=书房,吉他,阳光" \
-  -F "description=阳光洒入书房，电吉他与音箱静立书架旁"
+curl -X POST 'https://tongjixinzhi.cn/text2image/api/images/upload' \
+  -F 'file=@/path/to/image.png' \
+  -F 'prompt=阳光书房音乐角' \
+  -F 'keywords=书房,吉他,阳光'
 ```
 
-### 返回示例
+### 4.2 自动分析上传
+
+```http
+POST /gallery/images/upload
+Content-Type: multipart/form-data
+```
+
+仅接收必填文件 `file`，格式和大小限制与上一接口一致。服务尝试分析图片并提取标题、描述，再保存到图片库；分析失败会退回文件名推导，仍可继续上传。
+
+当前分析标题写入图片记录的 `prompt`，分析描述写入 `description`；因此返回的 `title` 可能是分析标题，`customTitle` 仍为空。
+
+```bash
+curl -X POST 'https://tongjixinzhi.cn/text2image/api/gallery/images/upload' \
+  -F 'file=@/path/to/image.png'
+```
+
+### 4.3 上传响应
+
+两个上传接口均返回以下结构（图片对象还有第 2 节的兼容字段）：
 
 ```json
 {
@@ -57,6 +231,7 @@ curl -X POST "http://43.142.31.198:9876/api/images/upload" \
   "image": {
     "id": 123,
     "title": "阳光书房音乐角",
+    "customTitle": "",
     "prompt": "阳光书房音乐角",
     "description": "阳光书房音乐角",
     "keywords": "书房,吉他,阳光",
@@ -71,57 +246,47 @@ curl -X POST "http://43.142.31.198:9876/api/images/upload" \
 }
 ```
 
-## 2. 创建图片
+处理时统一转换为 PNG 字节，但 multipart 上传的存储文件名可能保留源扩展名（`.jpg` 规范为 `.jpeg`），声明的 MIME 类型也可能随文件名确定。不要假定上传结果的文件名一定以 `.png` 结尾。COS 文件名冲突时可能追加后缀，请使用实际返回的 `fileName` 和 `cosKey`。
 
-根据文本提示词生成图片，生成成功后自动上传到图片库，并返回图片记录。
+## 5. 免登录读取与搜索
+
+### 5.1 完整图片列表
 
 ```http
-POST /api/generate
-Content-Type: application/json
+GET /images
 ```
 
-### Body 参数
+| Query 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `sync_remote` | boolean | `false` | 兼容旧参数；当前直接读取 COS 列表并合并数据库 metadata |
 
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-| --- | --- | --- | --- | --- |
-| `prompt` | string | 是 | - | 文生图提示词 |
-| `keywords` | string 或 string[] | 否 | `""` | 关键词 |
-| `description` | string | 否 | `""` | 图片描述；为空时使用 `prompt` |
-| `original_prompt` | string | 否 | `""` | 原始描述；用于生成文件名，为空时使用 `prompt` |
-| `count` | integer | 否 | `1` | 生成数量，范围 `1-4` |
-
-### cURL 示例
+该接口返回全部图片，**没有 `skip`/`limit` 分页参数**。需要分页时使用搜索接口，包括 `query` 为空的情况。
 
 ```bash
-curl -X POST "http://43.142.31.198:9876/api/generate" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "一间复古风格厨房，黑白棋盘格地面，窗边有绿色植物，真实摄影",
-    "keywords": "厨房,复古,室内",
-    "description": "复古风格厨房 黑白棋盘格",
-    "original_prompt": "复古风格厨房 黑白棋盘格",
-    "count": 1
-  }'
+curl 'https://tongjixinzhi.cn/text2image/api/images'
 ```
 
-### 返回示例
+返回示例（节选）：
 
 ```json
 {
-  "message": "Generation succeeded",
   "success": true,
+  "total": 729,
+  "synced": 0,
   "images": [
     {
       "id": 124,
-      "title": "一间复古风格厨房，黑白棋盘格地面，窗边有绿色植物，真实摄影",
-      "prompt": "一间复古风格厨房，黑白棋盘格地面，窗边有绿色植物，真实摄影",
+      "title": "复古厨房",
+      "customTitle": "复古厨房",
+      "prompt": "复古风格厨房 黑白棋盘格",
       "description": "复古风格厨房 黑白棋盘格",
-      "keywords": "厨房,复古,室内",
-      "fileName": "复古风格厨房 黑白棋盘格.png",
-      "cosKey": "ppt-素材/图片素材/复古风格厨房 黑白棋盘格.png",
-      "previewUrl": "/api/images/124/preview",
-      "downloadUrl": "/api/images/124/download",
-      "mime_type": "image/png",
+      "fileName": "复古风格厨房黑白棋盘格.png",
+      "cosKey": "ppt-素材/图片素材/复古风格厨房黑白棋盘格.png",
+      "thumbnailUrl": "/api/images/thumbnail?key=ppt-%E7%B4%A0%E6%9D%90%2F%E5%9B%BE%E7%89%87%E7%B4%A0%E6%9D%90%2F%E5%A4%8D%E5%8F%A4%E9%A3%8E%E6%A0%BC%E5%8E%A8%E6%88%BF%E9%BB%91%E7%99%BD%E6%A3%8B%E7%9B%98%E6%A0%BC.png",
+      "previewUrl": "/api/images/preview?key=ppt-%E7%B4%A0%E6%9D%90%2F%E5%9B%BE%E7%89%87%E7%B4%A0%E6%9D%90%2F%E5%A4%8D%E5%8F%A4%E9%A3%8E%E6%A0%BC%E5%8E%A8%E6%88%BF%E9%BB%91%E7%99%BD%E6%A3%8B%E7%9B%98%E6%A0%BC.png",
+      "downloadUrl": "/api/images/download?key=ppt-%E7%B4%A0%E6%9D%90%2F%E5%9B%BE%E7%89%87%E7%B4%A0%E6%9D%90%2F%E5%A4%8D%E5%8F%A4%E9%A3%8E%E6%A0%BC%E5%8E%A8%E6%88%BF%E9%BB%91%E7%99%BD%E6%A3%8B%E7%9B%98%E6%A0%BC.png",
+      "size": 123456,
+      "created_at": "2026-10-12T03:00:00",
       "source": "generated",
       "status": "done"
     }
@@ -129,133 +294,254 @@ curl -X POST "http://43.142.31.198:9876/api/generate" \
 }
 ```
 
-## 3. 图片库对外开放
+COS 列表按对象修改时间倒序返回。`synced` 当前固定为 `0`，不要把它解释为本次新增图片数；读取列表不会根据该参数执行旧版的数据库同步流程。
 
-图片库开放接口用于外部系统读取、搜索、预览、缩略图和下载图片。以下读取类接口均不需要鉴权。
-
-### 3.1 获取图片列表
+### 5.2 搜索及分页
 
 ```http
-GET /api/images
+GET /images/search
 ```
 
-Query 参数：
-
-| 参数 | 类型 | 必填 | 说明 |
+| Query 参数 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `sync_remote` | boolean | 否 | 兼容旧参数；当前列表直接从远程图片目录读取并合并数据库 metadata |
+| `query` | string | `""` | 去掉首尾空白后搜索；为空返回未筛选列表的分页结果 |
+| `skip` | integer | `0` | 偏移量，必须大于或等于 0 |
+| `limit` | integer | `100` | 返回条数，范围 1–500 |
+| `sync_remote` | boolean | `false` | 兼容旧参数，不改变当前 COS 读取逻辑 |
 
-cURL：
+搜索字段：`title`、`prompt`、`description`、`keywords`、`file_name`、`cosKey`。使用不区分大小写的子字符串匹配，不是语义搜索或多关键词表达式解析。
 
 ```bash
-curl "http://43.142.31.198:9876/api/images"
+curl -G 'https://tongjixinzhi.cn/text2image/api/images/search' \
+  --data-urlencode 'query=厨房' \
+  --data-urlencode 'skip=0' \
+  --data-urlencode 'limit=20'
 ```
 
-返回示例：
+响应结构与列表一致，额外包含 `"message": "Search succeeded"`。`total` 是筛选后的总数，`images` 是当前分页结果。
+
+## 6. 缩略图、预览及下载
+
+### 6.1 按 COS key 获取缩略图
+
+```http
+GET /images/thumbnail?key=<编码后的cosKey>
+GET /images/cos/thumbnail?key=<编码后的cosKey>
+```
+
+两条路径为同一接口的别名。输出 `image/webp`，中心裁剪为 16:9 后缩放到 640 × 360；响应带 `Cache-Control: public, max-age=86400`。当前没有宽高自定义参数，也没有数字 ID 形式的缩略图接口。
+
+```bash
+curl -G 'https://tongjixinzhi.cn/text2image/api/images/thumbnail' \
+  --data-urlencode 'key=ppt-素材/图片素材/阳光书房音乐角.png' \
+  -o thumb.webp
+```
+
+### 6.2 预览原图
+
+```http
+GET /images/preview?key=<编码后的cosKey>
+GET /images/cos/preview?key=<编码后的cosKey>
+GET /images/{image_id}/preview
+```
+
+返回图片二进制，`Content-Disposition: inline`。数字 ID 接口从数据库查找记录，可处理数据库记录对应的远程或本地图片。
+
+### 6.3 下载原图
+
+```http
+GET /images/download?key=<编码后的cosKey>
+GET /images/cos/download?key=<编码后的cosKey>
+GET /images/{image_id}/download
+```
+
+返回图片二进制，`Content-Disposition: attachment`，中文文件名通过 UTF-8 `filename*` 传递。
+
+```bash
+curl -L 'https://tongjixinzhi.cn/text2image/api/images/124/download' -o image.png
+```
+
+`key` 必须是实际返回的完整 `cosKey`，并位于服务配置允许的图片前缀下；禁止 `..` 路径片段。用 `--data-urlencode` 或浏览器 `URLSearchParams` 编码，不要手工重复编码。
+
+```javascript
+const params = new URLSearchParams({ key: image.cosKey })
+const preview = `https://tongjixinzhi.cn/text2image/api/images/preview?${params}`
+```
+
+## 7. 需要登录的相关接口
+
+这些接口是现有项目能力，不属于免登录开放范围。
+
+### 7.1 登录并保存会话
+
+```bash
+curl -X POST 'https://tongjixinzhi.cn/text2image/api/auth/login' \
+  -H 'Content-Type: application/json' \
+  -c cookies.txt \
+  -d '{"username":"你的账号","password":"你的密码"}'
+```
+
+成功返回 `{"success":true,"user":{...}}`，并设置 `generate_pic_session` Cookie，当前会话最长有效期 7 天。后续使用 `-b cookies.txt`。`GET /auth/me` 查询会话，`POST /auth/logout` 退出。
+
+用户角色由服务端配置推导，客户端不能通过填写 `role` 获得管理员权限。
+
+### 7.2 生成临时预览
+
+```http
+POST /generate/draft
+Content-Type: application/json
+Cookie: generate_pic_session=...
+```
+
+Body 与 `/generate` 相同，支持 `title`。该接口不上传、不创建持久化图片记录。
+
+返回节选：
 
 ```json
 {
+  "message": "Draft generation succeeded",
   "success": true,
-  "total": 479,
-  "synced": 0,
-  "images": [
-    {
-      "id": 1,
-      "title": "满天星问号",
-      "prompt": "满天星问号",
-      "description": "",
-      "fileName": "满天星问号.png",
-      "cosKey": "ppt-素材/图片素材/满天星问号.png",
-      "thumbnailUrl": "/api/images/thumbnail?key=...",
-      "previewUrl": "/api/images/preview?key=...",
-      "downloadUrl": "/api/images/download?key=...",
-      "size": 123456,
-      "createdAt": "2026-06-07T12:54:48",
-      "source": "cos",
-      "status": "done"
-    }
-  ]
+  "images": [{
+    "id": "draft-1",
+    "title": "复古厨房",
+    "prompt": "实际生成提示词",
+    "description": "输入描述",
+    "keywords": "厨房,复古",
+    "mimeType": "image/png",
+    "fileName": "复古厨房.png",
+    "imageBase64": "<不含data前缀的PNG Base64>",
+    "previewUrl": "data:image/png;base64,<PNG Base64>",
+    "uploaded": false,
+    "temporary": true
+  }]
 }
 ```
 
-### 3.2 搜索图片
+这里的 `draft-1` 不是数据库 ID；`previewUrl` 不能当成持久化下载地址。
+
+### 7.3 上传生成预览
 
 ```http
-GET /api/images/search
+POST /generate/upload
+Content-Type: application/json
+Cookie: generate_pic_session=...
 ```
 
-Query 参数：
+| Body 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `prompt` | string | 是 | 原始描述或生成提示词 |
+| `image_base64` | string | 是 | 图片 Base64，支持裸 Base64 或 `data:image/...;base64,...` |
+| `title` | string | 否 | 手动标题，最长 200 字符；默认空字符串 |
+| `original_prompt` | string | 否 | 原始描述；优先用于持久化描述及生成文件名 |
+| `description` | string | 否 | 图片补充描述，默认使用 `prompt` |
+| `keywords` | string 或 string[] | 否 | 关键词 |
+| `file_name` | string | 否 | 仅当原始描述及 `prompt` 没有可用文件名依据时才作为回退 |
 
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-| --- | --- | --- | --- | --- |
-| `query` | string | 否 | `""` | 搜索关键词 |
-| `skip` | integer | 否 | `0` | 分页偏移 |
-| `limit` | integer | 否 | `100` | 返回数量，范围 `1-500` |
-| `sync_remote` | boolean | 否 | `false` | 兼容旧参数 |
-
-搜索范围包括：`prompt`、`description`、`keywords`、`file_name`、`cosKey`。
+注意请求名是 `image_base64`，生成预览响应名是 `imageBase64`，需要显式映射。
 
 ```bash
-curl "http://43.142.31.198:9876/api/images/search?query=厨房&skip=0&limit=20"
+curl -X POST 'https://tongjixinzhi.cn/text2image/api/generate/upload' \
+  -b cookies.txt \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"复古厨房","title":"厨房封面","image_base64":"<PNG Base64>"}'
 ```
 
-### 3.3 获取缩略图
+响应为 `{"message":"Upload succeeded","success":true,"images":[...持久化图片对象...]}`。
+
+### 7.4 更新 metadata
 
 ```http
-GET /api/images/thumbnail?key=<URL编码后的cosKey>
-GET /api/images/cos/thumbnail?key=<URL编码后的cosKey>
+PATCH /images/{image_id}/metadata
+Content-Type: application/json
+Cookie: generate_pic_session=...
 ```
 
-返回：
+| Body 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `title` | string 或 null | `null` | 省略或传 null 保留已有手动标题；`""` 或全空格清空标题；最长 200 字符 |
+| `originalPrompt` | string | `""` | 非空时更新原始描述；空值保留原始描述 |
+| `expandedPrompt` | string | `""` | 写入图片 `description` |
+| `keywords` | string 或 string[] | `""` | 更新关键词 |
 
-- `Content-Type: image/webp`
-- 固定 16:9，默认 `640 x 360`
-- 用于图片卡片、列表封面
+**除 `title` 外，省略 `expandedPrompt` 和 `keywords` 会将对应字段清空。** 只改标题而需保留 metadata 时，应该同时传回现有描述和关键词；不要把该 PATCH 接口当成所有字段都“省略即保留”的协议。
 
 ```bash
-curl -L "http://43.142.31.198:9876/api/images/thumbnail?key=ppt-%E7%B4%A0%E6%9D%90%2F%E5%9B%BE%E7%89%87%E7%B4%A0%E6%9D%90%2Fxxx.png" -o thumb.webp
+curl -X PATCH 'https://tongjixinzhi.cn/text2image/api/images/124/metadata' \
+  -b cookies.txt \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title":"厨房封面",
+    "originalPrompt":"复古风格厨房 黑白棋盘格",
+    "expandedPrompt":"复古风格厨房 黑白棋盘格",
+    "keywords":"厨房,复古,室内"
+  }'
 ```
 
-### 3.4 预览原图
+返回 `{"success":true,"message":"Metadata updated","image":{...}}`。清空 `title` 后，返回对象的显示 `title` 会重新回退到原始描述。
+
+### 7.5 管理员改名与删除
 
 ```http
-GET /api/images/preview?key=<URL编码后的cosKey>
-GET /api/images/cos/preview?key=<URL编码后的cosKey>
-GET /api/images/{image_id}/preview
+PATCH /images/{image_id}/name
+Body: {"name":"新标题"}
 ```
 
-返回图片二进制，`Content-Disposition: inline`，适合浏览器预览。
-
-### 3.5 下载原图
+`image_id` 支持数据库数字 ID，以及 COS-only 图片的临时 `cos-<index>`。使用临时 ID 时，Body 必须额外提供 `cosKey`（实际对象完整 key，最长 1000 字符）。服务器校验目录和对象存在性后补建 metadata，返回稳定的数字 ID；后续应使用响应中的新 ID。`name` 长度 1–200，去掉首尾空白后不能为空。该操作写入独立标题字段，不修改原始描述、不移动 COS 对象。响应包含 `success`、`message: "Image name updated"` 和 `image`。
 
 ```http
-GET /api/images/download?key=<URL编码后的cosKey>
-GET /api/images/cos/download?key=<URL编码后的cosKey>
-GET /api/images/{image_id}/download
+DELETE /images/{image_id}
 ```
 
-返回图片二进制，`Content-Disposition: attachment`，适合下载或复制下载链接给外部用户。
+数字 ID 删除数据库记录及其存储对象。对于仅存在于 COS 的 `cos-<index>` 图片，需额外提供查询参数 `cosKey`（必需的真实对象 key）；`fileName` 是兼容辅助参数。删除成功返回 `{"success":true}`。改名和删除均要求管理员登录。
 
-```bash
-curl -L "http://43.142.31.198:9876/api/images/124/download" -o image.png
+## 8. 错误返回
+
+| 状态码 | 场景 |
+| --- | --- |
+| `400` | 空提示词、生成数量不在 1–4、上传空文件、格式不支持、上传描述缺失、非法 key、全空白改名 |
+| `401` | 鉴权接口未登录、登录过期或登录失败 |
+| `403` | 非管理员执行管理操作、COS key 不在允许目录前缀内 |
+| `404` | 数字图片 ID 不存在或对应本地文件不存在 |
+| `413` | multipart 上传文件超过 50 MiB；也可能由反向代理体积限制返回 |
+| `422` | 请求类型或必填字段校验失败、标题超过 200 字符、分页参数超出范围 |
+| `500` | 生成服务、存储、图片解码或缩略图处理失败 |
+
+通常的业务错误：
+
+```json
+{"detail":"Prompt is required"}
 ```
 
-## 错误返回
+需要登录的接口会返回如下 401，不能假定所有错误都有 `detail`：
 
-常见错误：
+```json
+{"message":"未登录或登录已过期"}
+```
 
-| 状态码 | 场景 | 示例 |
-| --- | --- | --- |
-| `400` | 参数缺失、文件为空、格式不支持、非法 COS key | `{"detail":"Prompt is required"}` |
-| `403` | COS key 不在允许的图片目录内 | `{"detail":"COS key is outside image prefix"}` |
-| `404` | 图片 ID 不存在或本地文件不存在 | `{"detail":"Image 1 not found"}` |
-| `413` | 上传文件超过 50MB | `{"detail":"File is larger than 50MB"}` |
-| `500` | 生成服务、远程存储或下载失败 | `{"detail":"Generation failed: ..."}` |
+FastAPI 参数校验错误的 `detail` 是数组：
 
-## 调用建议
+```json
+{"detail":[{"loc":["body","title"],"msg":"...","type":"..."}]}
+```
 
-- 图片卡片展示优先使用 `thumbnailUrl`。
-- 点击查看大图使用 `previewUrl`。
-- 下载和复制给外部系统使用 `downloadUrl`。
-- 外部系统收到相对 URL 时，统一拼接后端域名。
-- 当前只开放上传、生成、读取、预览、下载；删除图片和修改 metadata 仍需要登录鉴权。
+COS 对象缺失或下载失败在当前实现中可能返回 500，不应一律依赖 404 判断对象是否存在。调用方也应兼容反向代理产生的非 JSON 错误页。
+
+## 9. 接入建议与版本变化
+
+- 卡片优先显示响应的 `title`，不要自行用 `prompt` 覆盖手动标题。
+- 缩略图使用 `thumbnailUrl`；原图使用 `previewUrl`；文件保存使用 `downloadUrl`。缺少缩略图字段时可使用原图地址，或用 `cosKey` 构造缩略图接口。
+- 需要分页时调用 `/images/search`；空 `query` 也可分页读取全部素材。
+- 服务器调用、cURL 调用不受浏览器 CORS 限制；免登录不意味着任意第三方网页都可跨域 fetch，跨域网页接入需要单独配置允许来源。
+- “复制图片到剪贴板”是图片库前端通过 fetch、canvas 和 Clipboard API 实现的功能，没有独立后端复制接口；下载接口仍返回图片二进制。
+- `/gallery/` 与工作台嵌入页面使用同一个图片库页面和同一组后端接口，不存在两套独立图片数据。
+- 生成接口没有定义幂等键。超时后直接重试可能再次生成及计费；应先确认原请求是否完成。
+
+相对旧文档的关键变化：推荐 HTTPS 子路径地址；新增手动标题字段及标题搜索；补充自动分析上传；明确生成预览/上传结果需要会话；纠正 GIF 支持、上传描述必填、完整列表不分页和相对 URL 的拼接规则。
+
+## 10. 本次核验范围
+
+已与线上服务器逐文件核对：`main.py`、生成/图片/上传/登录路由、图片对象序列化、存储服务和鉴权服务，相关实现与当前本地代码一致。
+
+2026-10-12 已通过推荐 HTTPS 地址核验：未登录 `/auth/me`、`/generate/draft`、`/generate/upload` 返回 401；空提示词生成返回 400；标题超长、缺失上传文件、非法分页参数返回 422。
+
+本次使用参数校验和鉴权请求进行核验，未执行实际生成、文件上传、metadata 修改或删除操作。

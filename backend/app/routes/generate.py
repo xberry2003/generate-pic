@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import base64
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -34,6 +34,7 @@ class LocalImageInfo:
 
 class GenerateRequest(BaseModel):
     prompt: str
+    title: str = Field(default="", max_length=200)
     keywords: str | list[str] = ""
     description: str = ""
     original_prompt: str = ""
@@ -54,6 +55,7 @@ class DraftGenerateResponse(BaseModel):
 
 class UploadDraftRequest(BaseModel):
     prompt: str
+    title: str = Field(default="", max_length=200)
     keywords: str | list[str] = ""
     description: str = ""
     original_prompt: str = ""
@@ -128,7 +130,8 @@ async def generate_image(
                 )
             db_image = create_image_record(
                 db,
-                prompt=request.prompt,
+                prompt=request.original_prompt or request.prompt,
+                title=request.title,
                 description=image_description,
                 keywords=keyword_text,
                 remote_info=remote_info,
@@ -209,7 +212,7 @@ async def generate_image_draft(
             images.append(
                 {
                     "id": f"draft-{index + 1}",
-                    "title": request.description or request.prompt,
+                    "title": request.title.strip() or request.original_prompt or request.description or request.prompt,
                     "prompt": request.prompt,
                     "description": request.description or request.prompt,
                     "keywords": keyword_text,
@@ -263,7 +266,8 @@ async def upload_generated_draft(
         remote_info = SFTPStorageClient().upload_bytes(png_bytes, file_name)
         db_image = create_image_record(
             db,
-            prompt=request.prompt,
+            prompt=request.original_prompt or request.prompt,
+            title=request.title,
             description=image_description,
             keywords=keyword_text,
             remote_info=remote_info,

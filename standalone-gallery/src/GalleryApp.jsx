@@ -15,6 +15,7 @@ import {
 import { deleteImage, getCurrentUser, getImageDownloadUrl, listImages, renameImage, searchImages, uploadGalleryImage } from './api'
 import { normalizeImageUrl } from './imageLinks'
 import { copyImageToClipboard } from './imageClipboard'
+import { getApiErrorMessage } from './apiErrors'
 
 const { Text } = Typography
 const PAGE_SIZE = 40
@@ -193,7 +194,7 @@ function GalleryApp() {
     if (!renameTarget) return
     try {
       setRenaming(true)
-      const response = await renameImage(renameTarget.id, name)
+      const response = await renameImage(renameTarget.id, name, renameTarget.cosKey || '')
       setImages((current) => current.map((image) => (
         image.id === renameTarget.id
           ? normalizeGalleryImage({ ...image, ...(response.image || {}), title: name })
@@ -202,7 +203,8 @@ function GalleryApp() {
       setRenameTarget(null)
       message.success('图片名称已更新')
     } catch (err) {
-      message.error(err?.response?.data?.detail || err.message || '修改名称失败')
+      console.error('修改图片名称失败:', err)
+      message.error(getApiErrorMessage(err, '修改名称失败'))
     } finally {
       setRenaming(false)
     }

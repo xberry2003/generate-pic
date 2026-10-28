@@ -28,6 +28,7 @@ import {
   getImageDownloadUrl,
   listWorkspaceRows,
   updateWorkspaceRow,
+  updateImageMetadata,
   uploadGeneratedImage,
 } from '../services/api'
 import EditableCell from '../components/EditableCell'
@@ -40,7 +41,7 @@ const DEFAULT_BATCH_ROWS = 10
 const MAX_GENERATE_CONCURRENCY = 2
 const WORKSPACE_SAVE_DEBOUNCE_MS = 800
 const AUTO_GENERATE_DELAY_SECONDS = 5
-const TABLE_SCROLL_X = 920
+const TABLE_SCROLL_X = 1140
 const ORIGINAL_PROMPT_HEADERS = ['prompt', '原始描述', 'originalPrompt']
 // 前端表格任务状态。状态值沿用原生成页逻辑，避免改变现有交互语义。
 const STATUS = {
@@ -57,12 +58,13 @@ const STATUS = {
 
 /**
  * 创建一条前端表格记录
- * 数据流说明：表格行是前端工作台的内部结构，不要求后端新增字段；生成或搜索结果会被适配成该结构。
+ * 数据流说明：标题与原始描述独立保存，生成结果和工作台草稿均携带标题字段。
  */
 const createEmptyRow = (overrides = {}) => ({
   id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   workspaceRowId: null,
   rowKey: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  title: '',
   originalPrompt: '',
   description: '',
   expandedPromptTouched: false,
@@ -165,15 +167,16 @@ const normalizeImportedRows = (csvRows) => {
   if (!csvRows.length) return { rows: [], skipped: 0 }
 
   const [firstRow, ...restRows] = csvRows
-  const firstCell = String(firstRow?.[0] || '').trim()
-  const hasHeader = ORIGINAL_PROMPT_HEADERS.some((header) => firstCell.toLowerCase() === header.toLowerCase())
+  const promptIndex = firstRow.findIndex((cell) => ORIGINAL_PROMPT_HEADERS.some((header) => String(cell).trim().toLowerCase() === header.toLowerCase()))
+  const hasHeader = promptIndex >= 0
+  const titleIndex = hasHeader ? firstRow.findIndex((cell) => ['标题', 'title'].includes(String(cell).trim().toLowerCase())) : -1
   const dataRows = hasHeader ? restRows : csvRows
 
   const importedRows = []
   let skipped = 0
 
   dataRows.forEach((items) => {
-    const originalPrompt = (items[0] || '').trim()
+    const originalPrompt = (items[hasHeader ? promptIndex : 0] || '').trim()
     if (!originalPrompt) {
       skipped += 1
       return
@@ -183,6 +186,7 @@ const normalizeImportedRows = (csvRows) => {
 
     importedRows.push(createEmptyRow({
       originalPrompt,
+      title: (items[titleIndex] || '').trim().slice(0, 200),
       count: 1,
       status: STATUS.EDITING,
       countdown: AUTO_GENERATE_DELAY_SECONDS,
@@ -242,7 +246,7 @@ const metadataFromImage = (image) => {
 }
 
 const isNonEmptyWorkspaceRow = (row) =>
-  Boolean(String(row?.originalPrompt || '').trim() || row?.resultImages?.length || row?.uploaded || row?.cosKey)
+  Boolean(String(row?.title || '').trim() || String(row?.originalPrompt || '').trim() || row?.resultImages?.length || row?.uploaded || row?.cosKey)
 
 const displayImageUrlForRow = (row, image) =>
   image?.thumbnailUrl ||
@@ -261,7 +265,7 @@ const timestampOfWorkspaceItem = (item) => {
 
 const restoreWorkspaceRows = (items = []) => {
   const restoredRows = items
-    .filter((item) => String(item?.originalPrompt || '').trim())
+    .filter((item) => String(item?.title || '').trim() || String(item?.originalPrompt || '').trim())
     .sort((a, b) => timestampOfWorkspaceItem(b) - timestampOfWorkspaceItem(a))
     .map(mapWorkspaceRowToRow)
 
@@ -274,6 +278,7 @@ const restoreWorkspaceRows = (items = []) => {
  */
 const serializeWorkspaceRow = (row) => ({
   rowKey: row.rowKey || row.id,
+  title: row.title || '',
   originalPrompt: row.originalPrompt || '',
   expandedPrompt: '',
   expandedPromptTouched: false,
@@ -301,6 +306,7 @@ const mapWorkspaceRowToRow = (item) => {
     id: item.rowKey || `workspace-${item.id}`,
     workspaceRowId: item.id,
     rowKey: item.rowKey || `workspace-${item.id}`,
+    title: item.title || '',
     originalPrompt: item.originalPrompt || '',
     description: '',
     expandedPromptTouched: false,
@@ -522,6 +528,7 @@ function BatchGenerateTablePage({ active = true }) {
     if (!row?.dbId || !row.uploaded) return
     try {
       const response = await updateImageMetadata(row.dbId, {
+        title: row.title || '',
         originalPrompt: row.originalPrompt,
         expandedPrompt: row.originalPrompt,
         keywords: '',
@@ -676,7 +683,7 @@ function BatchGenerateTablePage({ active = true }) {
         '',
         row.count,
         prompt,
-        { signal: abortController.signal, originalPrompt: prompt }
+        { signal: abortController.signal, originalPrompt: prompt, title: row.title || '' }
       )
       if (abortController.signal.aborted || !getRowById(rowId)) return
       const resultImages = (response.images || []).map(normalizeImageResponse)
@@ -835,6 +842,11 @@ function BatchGenerateTablePage({ active = true }) {
     }, 300)
 
     autoGenerateTimerMapRef.current.set(rowId, waitingTimerId)
+  }
+
+  const handleTitleChange = (rowId, value) => {
+    updateRowAndSave(rowId, { title: value })
+    window.setTimeout(() => scheduleMetadataSave(rowId), 0)
   }
 
   const handlePromptChange = (rowId, value) => {
@@ -1006,7 +1018,7 @@ function BatchGenerateTablePage({ active = true }) {
   }
 
   const downloadCsvTemplate = () => {
-    const csvContent = ['prompt', '污水厂', '一颗西瓜'].join('\n')
+    const csvContent = ['prompt,标题', '污水厂,污水处理厂', '一颗西瓜,'].join('\n')
     const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -1043,6 +1055,15 @@ function BatchGenerateTablePage({ active = true }) {
 
   const handleCellKeyDown = (rowId, columnKey, event) => {
     if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229) return
+    if (columnKey === 'prompt' && event.key === 'ArrowRight'
+      && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      const input = event.currentTarget
+      if (input.selectionStart === input.value.length && input.selectionEnd === input.value.length) {
+        event.preventDefault()
+        focusCell(rowId, 'title')
+      }
+      return
+    }
     if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     focusNextRowCell(rowId, columnKey)
@@ -1137,6 +1158,7 @@ function BatchGenerateTablePage({ active = true }) {
       clearRowAutoGenerateTimers(rowId)
       updateRowAndSave(rowId, { status: STATUS.UPLOADING, countdown: null, isEditing: false, uploading: true, errorMessage: '' })
       const response = await uploadGeneratedImage({
+        title: row.title || '',
         prompt: row.originalPrompt,
         keywords: '',
         description: row.originalPrompt,
@@ -1160,6 +1182,8 @@ function BatchGenerateTablePage({ active = true }) {
         resultImages: [uploadedImage],
         errorMessage: '',
       })
+      // Pick up title edits made while the upload request was in flight.
+      window.setTimeout(() => scheduleMetadataSave(rowId), 0)
       message.success('已自动上传到图片库')
     } catch (error) {
       updateRowAndSave(rowId, {
@@ -1261,6 +1285,19 @@ function BatchGenerateTablePage({ active = true }) {
             onPaste={(event) => handlePromptPaste(row.id, event)}
             onKeyDown={(event) => handleCellKeyDown(row.id, 'prompt', event)}
             dataCellId={`${row.id}-prompt`}
+          />
+        ),
+      },
+      {
+        title: '标题',
+        dataIndex: 'title',
+        width: 220,
+        render: (_, row) => (
+          <EditableCell
+            value={row.title || ''}
+            placeholder="选填，留空使用原始描述"
+            onChange={(value) => handleTitleChange(row.id, value.slice(0, 200))}
+            dataCellId={`${row.id}-title`}
           />
         ),
       },
@@ -1428,7 +1465,7 @@ function BatchGenerateTablePage({ active = true }) {
                     decoding="async"
                   />
                   <div className="gallery-card-meta">
-                    <Text strong ellipsis>{row.originalPrompt || '未命名图片'}</Text>
+                    <Text strong ellipsis>{row.title?.trim() || row.originalPrompt || '未命名图片'}</Text>
                     <Text type="secondary" ellipsis>{row.originalPrompt || '-'}</Text>
                   </div>
                 </button>

@@ -93,3 +93,11 @@
   overflow-y: auto;
   background: #f4f6f8;
 }
+
+/* /gallery/ owns its responsive layout and scrolling inside the workspace. */
+.app-content-gallery {
+  height: calc(100vh - 58px);
+  height: calc(100dvh - 58px);
+  padding: 0;
+  overflow: hidden;
+}

@@ -16,6 +16,7 @@ router = APIRouter()
 
 class WorkspaceRowPayload(BaseModel):
     rowKey: str | None = ""
+    title: str = Field(default="", max_length=200)
     originalPrompt: str = ""
     expandedPrompt: str = ""
     expandedPromptTouched: bool = False
@@ -61,6 +62,7 @@ def row_to_dict(row: WorkspaceRow) -> dict[str, Any]:
     return {
         "id": row.id,
         "rowKey": row.row_key or f"draft-{row.id}",
+        "title": row.title or "",
         "originalPrompt": row.original_prompt or "",
         "expandedPrompt": row.expanded_prompt or "",
         "description": row.expanded_prompt or "",
@@ -85,6 +87,7 @@ def row_to_dict(row: WorkspaceRow) -> dict[str, Any]:
 
 def apply_payload(row: WorkspaceRow, payload: WorkspaceRowPayload) -> WorkspaceRow:
     row.row_key = payload.rowKey or row.row_key
+    row.title = payload.title.strip()
     row.original_prompt = payload.originalPrompt or ""
     row.expanded_prompt = payload.expandedPrompt or ""
     row.expanded_prompt_touched = 1 if payload.expandedPromptTouched else 0

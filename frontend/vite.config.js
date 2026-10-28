@@ -10,6 +10,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // Keep the embedded gallery on the same origin during development.
+      '/gallery': {
+        target: 'http://127.0.0.1:5174',
+        changeOrigin: true,
+      },
       // Preserve the production subpath during local development.
       '/text2image/api': {
         target: 'http://127.0.0.1:8000',

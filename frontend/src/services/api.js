@@ -71,6 +71,7 @@ export const generateImages = async (prompt, keywords = '', count = 1, descripti
       count,
       description,
       original_prompt: options.originalPrompt || '',
+      title: options.title || '',
     })
     return response.data
   } catch (error) {
@@ -109,6 +110,7 @@ export const generateImageDraft = async (prompt, keywords = '', count = 1, descr
       count,
       description,
       original_prompt: options.originalPrompt || '',
+      title: options.title || '',
     }, {
       signal: options.signal,
     })
@@ -133,13 +135,14 @@ export const expandPrompt = async (prompt, options = {}) => {
   }
 }
 
-export const uploadGeneratedImage = async ({ prompt, keywords = '', description = '', originalPrompt = '', imageBase64, fileName = '' }) => {
+export const uploadGeneratedImage = async ({ prompt, keywords = '', description = '', originalPrompt = '', title = '', imageBase64, fileName = '' }) => {
   try {
     const response = await apiClient.post('/generate/upload', {
       prompt,
       keywords,
       description,
       original_prompt: originalPrompt,
+      title,
       image_base64: imageBase64,
       file_name: fileName,
     })
@@ -150,9 +153,10 @@ export const uploadGeneratedImage = async ({ prompt, keywords = '', description 
   }
 }
 
-export const updateImageMetadata = async (imageId, { originalPrompt = '', expandedPrompt = '', keywords = '' }) => {
+export const updateImageMetadata = async (imageId, { title, originalPrompt = '', expandedPrompt = '', keywords = '' }) => {
   try {
     const response = await apiClient.patch(`/images/${imageId}/metadata`, {
+      ...(title !== undefined ? { title } : {}),
       originalPrompt,
       expandedPrompt,
       keywords,

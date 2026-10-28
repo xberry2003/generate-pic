@@ -1,133 +1,23 @@
-.gallery-page {
-  max-width: 1560px;
-  margin: 0 auto;
-}
-
-.gallery-card {
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-}
-
-.search-section {
-  padding-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.gallery-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: rgba(255, 255, 255, 0.96);
-  padding-top: 12px;
-  backdrop-filter: blur(8px);
-}
-
-.gallery-search-input {
-  width: min(420px, 72vw);
-}
-
-.gallery-count {
-  margin-top: 8px;
-  font-size: 13px;
-  color: #8c8c8c;
-}
-
-.image-card {
-  height: 100%;
-  border-radius: 8px;
-  overflow: hidden;
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
-}
-
-.image-card:hover {
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.13);
-  transform: translateY(-2px);
-}
-
-.image-card .ant-card-actions {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 12px;
-}
-
-.image-card .ant-card-actions > li {
-  width: auto !important;
-  margin: 0;
-}
-
-.image-card .ant-card-actions > li:not(:last-child) {
-  border-inline-end: 0;
-}
-
-.image-wrapper {
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  background: #f3f5f8;
-}
-
-.image-card {
+.workspace-gallery-frame {
   position: relative;
-}
-
-.image-select {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 5;
-  width: 24px;
-  height: 24px;
-  border: 2px solid #1677ff;
-  border-radius: 50%;
-  background: #fff;
-  color: #fff;
-  cursor: pointer;
-}
-
-.image-select.selected {
-  background: #1677ff;
-}
-
-.gallery-image {
   width: 100%;
   height: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
+  min-width: 0;
 }
 
-.image-title {
-  min-height: 24px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: #111827;
-}
-
-.keywords-section {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.image-time {
+.workspace-gallery-iframe {
   display: block;
-  max-width: 100%;
-  overflow: hidden;
-  font-size: 12px;
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
 
-.image-time {
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.image-time {
-  color: #8c8c8c;
-}
-
-.pagination-row {
+.workspace-gallery-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: flex;
+  align-items: center;
   justify-content: center;
-  margin-top: 12px;
+  background: #eef3f8;
 }

@@ -1,4 +1,4 @@
-﻿"""
+"""
 鏁版嵁搴撻厤缃拰鍒濆鍖栨枃浠?
 
 鏈枃浠跺寘鍚細
@@ -89,6 +89,7 @@ def ensure_image_columns():
         return
 
     expected_columns = {
+        "title": "VARCHAR(200)",
         "file_name": "VARCHAR(255)",
         "storage_provider": "VARCHAR(50)",
         "remote_path": "VARCHAR(1000)",
@@ -116,6 +117,7 @@ def ensure_workspace_row_columns():
 
     expected_columns = {
         "user_id": "VARCHAR(255)",
+        "title": "VARCHAR(200)",
         "row_key": "VARCHAR(255)",
         "original_prompt": "TEXT",
         "expanded_prompt": "TEXT",

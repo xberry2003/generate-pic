@@ -29,6 +29,7 @@ THUMBNAIL_CACHE_DIR = Path(os.getenv(
 
 
 class ImageMetadataUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
     originalPrompt: str = ""
     expandedPrompt: str = ""
     keywords: str | list[str] = ""
@@ -36,6 +37,7 @@ class ImageMetadataUpdateRequest(BaseModel):
 
 class ImageRenameRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
+    cosKey: str = Field(default="", max_length=1000)
 
 
 def mime_type_for_filename(file_name: str) -> str:
@@ -79,9 +81,10 @@ def cos_file_to_dict(remote_file, db_by_path: dict[str, ImageModel], index: int)
     download_url = f"/api/images/download?key={encoded_key}"
     title = remote_file.file_name
     if db_image:
-        title = db_image.prompt or db_image.description or remote_file.file_name
+        title = (db_image.title or "").strip() or db_image.prompt or db_image.description or remote_file.file_name
         payload = {
             "id": db_image.id,
+            "customTitle": db_image.title or "",
             "prompt": db_image.prompt or "",
             "originalPrompt": db_image.prompt or "",
             "original_prompt": db_image.prompt or "",
@@ -201,7 +204,7 @@ async def search_images(
                 if needle
                 in " ".join(
                     str(image.get(field, ""))
-                    for field in ("prompt", "description", "keywords", "file_name", "cosKey")
+                    for field in ("title", "prompt", "description", "keywords", "file_name", "cosKey")
                 ).lower()
             ]
 
@@ -236,6 +239,8 @@ async def update_image_metadata(
     original_prompt = request.originalPrompt.strip()
     expanded_prompt = request.expandedPrompt.strip()
 
+    if request.title is not None:
+        image.title = request.title.strip()
     image.prompt = original_prompt or image.prompt or ""
     image.description = expanded_prompt
     image.keywords = keyword_text or ""
@@ -252,22 +257,67 @@ async def update_image_metadata(
 
 @router.patch("/images/{image_id}/name")
 async def rename_image(
-    image_id: int,
+    image_id: str,
     request: ImageRenameRequest,
     user: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Update the administrator-managed display name without moving the COS object."""
-
-    image = db.query(ImageModel).filter(ImageModel.id == image_id).first()
-    if not image:
-        raise HTTPException(status_code=404, detail=f"Image {image_id} not found")
+    """Rename display metadata for database images and COS-only assets."""
 
     name = request.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="图片名称不能为空")
 
-    image.prompt = name
+    id_text = str(image_id)
+    image = None
+    if id_text.isdigit():
+        image = db.query(ImageModel).filter(ImageModel.id == int(id_text)).first()
+    elif id_text.startswith("cos-") and id_text[4:].isdigit():
+        # A COS list index is temporary; the actual object key is its identity.
+        if not request.cosKey.strip():
+            raise HTTPException(status_code=400, detail="缺少图片 COS 路径，请刷新图片库后重试")
+        key = validate_cos_key(request.cosKey)
+        image = (
+            db.query(ImageModel)
+            .filter(ImageModel.remote_path == key)
+            .order_by(desc(ImageModel.updated_at), desc(ImageModel.created_at))
+            .first()
+        )
+        if image is None:
+            try:
+                remote_file = next(
+                    (item for item in SFTPStorageClient().list_images() if item.remote_path == key),
+                    None,
+                )
+            except RemoteStorageError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            if remote_file is None:
+                raise HTTPException(status_code=404, detail="图片已不存在，请刷新图片库后重试")
+            image = ImageModel(
+                prompt=description_from_filename(remote_file.file_name),
+                description="",
+                keywords="",
+                file_path=key,
+                preview_url="",
+                file_name=remote_file.file_name,
+                storage_provider="cos",
+                remote_path=key,
+                download_url="",
+                mime_type=remote_file.mime_type,
+                file_size=remote_file.file_size,
+                source="cos",
+                status="done",
+                created_at=remote_file.modified_at or datetime.utcnow(),
+            )
+            db.add(image)
+            db.flush()
+            image.preview_url = f"/api/images/{image.id}/preview"
+            image.download_url = f"/api/images/{image.id}/download"
+
+    if image is None:
+        raise HTTPException(status_code=404, detail=f"Image {image_id} not found")
+
+    image.title = name
     image.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(image)

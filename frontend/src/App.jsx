@@ -86,7 +86,7 @@ function App() {
         <BatchGenerateTablePage active={currentPage === 'batch'} />
       </div>
       <div style={{ display: currentPage === 'gallery' ? 'block' : 'none', height: '100%' }}>
-        <GalleryPage active={currentPage === 'gallery'} />
+        {currentPage === 'gallery' && <GalleryPage />}
       </div>
     </>
   )
@@ -154,7 +154,7 @@ function App() {
           />
         </Layout.Sider>
 
-        <Layout.Content className="app-content">{renderWorkspaceContent()}</Layout.Content>
+        <Layout.Content className={`app-content${currentPage === 'gallery' ? ' app-content-gallery' : ''}`}>{renderWorkspaceContent()}</Layout.Content>
       </Layout>
     </Layout>
   )
